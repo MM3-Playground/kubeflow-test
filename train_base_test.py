@@ -9,6 +9,9 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+
+import mlflow
+
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
@@ -96,6 +99,15 @@ def parse_args():
     parser.add_argument('--save_dir', type=str, default='.', help='dir to save checkpoints and logs')
     parser.add_argument("--log_interval", type=int, default=0, help="interval between saving image samples")
     
+    ## DataLad
+    parser.add_argument("--repo", type=str, help="repository URL")
+    parser.add_argument("--commit", type=str, help="commit hash")
+    parser.add_argument("--name", type=str, help="name of the dataset")
+
+    ## MLflow
+    parser.add_argument("--workspace", type=str, help="workspace name")
+    parser.add_argument("--experiment", type=str, help="experiment name")
+
     args = parser.parse_args()
 
     return args
@@ -163,7 +175,8 @@ def init_dataset(args, global_rank, world_size, val = False):
                                 args.image_size,
                                 dct,
                                 (args.n_c_samples if not val else args.val_n_c_samples),
-                                val)
+                                val,
+                                args.repo, args.commit, args.name)
 
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=world_size, rank=global_rank, shuffle=True)
     
@@ -247,6 +260,7 @@ def save_checkpoints(args, checkpoint_dir, id, epoch, save_best, last_best, get_
         os.remove(last_pth)
 
     # save best
+    save_best_pth = None
     if (save_best):
         save_best_pth = os.path.join(checkpoint_dir, str(id) + "_best_" + str(epoch) + '.pth')
         torch.save(net.state_dict(), save_best_pth)
@@ -256,6 +270,8 @@ def save_checkpoints(args, checkpoint_dir, id, epoch, save_best, last_best, get_
         #     os.remove(last_best_pth)
 
         print('Checkpoint saved to %s.' % (save_best_pth))
+
+    return last_pth, save_best_pth
 
 def predict_loss(args, data, model,
                 criterion_BCE):
@@ -455,7 +471,7 @@ def train(args, global_rank, world_size, sync, get_module,
 
             # save model parameters
             if global_rank == 0:
-                save_checkpoints(args, checkpoint_dir, args.id, epoch,
+                last_pth, save_best_pth = save_checkpoints(args, checkpoint_dir, args.id, epoch,
                                  new_best == epoch, last_best,
                                  get_module,
                                  model)
@@ -472,6 +488,23 @@ def train(args, global_rank, world_size, sync, get_module,
 
                 if lr_scheduler.num_bad_epochs == 0:
                     lr_last_best = epoch
+
+            # log to MLflow
+            metrics = {
+                "train_loss": float(epoch_loss_avg),
+                "learning_rate": float(global_lr),
+            }
+            if (val_dataloader):
+                metrics.update({
+                    "val_loss": float(epoch_val_loss_avg),
+                    "best_val_loss": float(best_val_loss_avg),
+                })
+
+            if mlflow.active_run() is not None:
+                mlflow.log_metrics(metrics, step=epoch)
+
+                if save_best_pth is not None:
+                    mlflow.log_artifact(save_best_pth, "best_models")
                     
         # reset early stopping when learning rate changed
         lr_after_step = optimizer.param_groups[0]['lr']
@@ -482,6 +515,17 @@ def train(args, global_rank, world_size, sync, get_module,
         if (n_last_epochs > args.n_early or lr_scheduler.num_bad_epochs > args.n_early):
             print('Early stopping')
             break
+
+    # log to MLflow
+    if global_rank == 0 and mlflow.active_run() is not None:
+        net = model.module if get_module else model
+        net.eval()
+
+        mlflow.pytorch.log_model(
+            pytorch_model=net,
+            name=f"model-{args.run_name}-{args.id}",
+            serialization_format="pickle",
+        )
 
     print('Finished training')
 

@@ -1,18 +1,15 @@
-import os
+
 import random
-import numpy as np
 import cv2
 import pandas as pd
-from pathlib import Path
-
-import torch
 
 from torch.utils.data import Dataset
+
+import mlflow
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-import sys
 from utils.cnorm import *
 from utils.pilresize import *
 from utils.FCRDCT import *
@@ -48,7 +45,7 @@ class AnimeDataset(Dataset):
         
         return
 
-    def __init__(self, global_rank, iut_paths_file, image_size, id, dct, n_c_samples = None, val = False):
+    def __init__(self, global_rank, iut_paths_file, image_size, id, dct, n_c_samples = None, val = False, repo = None, commit = None, name = None):
         self.n_c_samples = n_c_samples
         
         self.val = val
@@ -97,6 +94,28 @@ class AnimeDataset(Dataset):
                     parts = l.rstrip().split(' ')
                     self.input_image_paths.append(parts[0])
                     self.labels.append(int(parts[1]))
+
+        # save to mlflow
+        if global_rank == 0:
+            mlflow.log_artifact(self.save_path, "datasets")
+            
+            dataframe = pd.DataFrame({
+                "input_image_paths": self.input_image_paths,
+                "labels": self.labels
+            })
+            dataset = mlflow.data.from_pandas(
+                dataframe,
+                source=repo,
+                digest=commit[:36],
+                name=name + ("-train" if not val else "-val")
+            )
+            mlflow.log_input(dataset, "train" if not val else "val")
+
+            mlflow.log_params({
+                "repo": repo,
+                "commit": commit,
+                "name": name
+            })
 
         # ----------
         #  TODO: Transforms for data augmentation (more augmentations should be added)
