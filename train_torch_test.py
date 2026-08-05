@@ -26,6 +26,8 @@ def main():
     args, checkpoint_dir = init_env_multi(args, global_rank)
 
     # MLflow
+    mlflow_run = None
+    
     if global_rank == 0:
         mlflow.set_workspace(args.workspace) 
         mlflow.set_experiment(args.experiment)
@@ -51,6 +53,9 @@ def main():
             "val_paths_file": args.val_paths_file or "",
             "load_path": args.load_path or "",
         })
+
+        mlflow.log_artifact(args.paths_file, "datasets")
+        mlflow.log_artifact(args.val_paths_file, "datasets")
 
     # models
     model = init_models(args)

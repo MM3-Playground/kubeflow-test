@@ -1,6 +1,5 @@
 import os
 import cv2
-import numpy as np
 import sys
 import argparse
 from sklearn.metrics import accuracy_score, ConfusionMatrixDisplay
@@ -8,18 +7,13 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import csv
 import random
-import pandas as pd
-from pathlib import Path
 
 import torch
-import torch.nn.functional as F
-
-from torchvision.utils import save_image
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-import timm
+import mlflow
 
 sys.path.insert(0, '..')
 from models.Xception import *
@@ -85,6 +79,8 @@ def save_cm(y_true, y_pred, save_path):
 def parse_args():
     parser = argparse.ArgumentParser(description='Evaluation')
 
+    parser.add_argument("--id", type=str, help="run id")
+
     parser.add_argument("--iut_paths_file", type=str, default="/dataset/iut_files.txt", help="path to the file with paths for image under test") # each line of this file should contain "/path/to/image.ext i", i is an integer represents classes
     parser.add_argument("--image_size", type=int, default=512, help="size of images")
 
@@ -96,11 +92,36 @@ def parse_args():
     parser.add_argument('--model', default='xception', choices=['xception', 'cnndct','cnnpixel','ours'], help='model selection')
     parser.add_argument('--load_path', type=str, help='path to the pretrained model', default="checkpoints/model.pth")
     
+    ## DataLad
+    parser.add_argument("--repo", type=str, help="repository URL")
+    parser.add_argument("--commit", type=str, help="commit hash")
+    parser.add_argument("--name", type=str, help="name of the dataset")
+
+    ## MLflow
+    parser.add_argument("--workspace", type=str, help="workspace name")
+    parser.add_argument("--experiment", type=str, help="experiment name")
+
     args = parser.parse_args()
     return args
 
 if __name__ == '__main__':
     args = parse_args()
+
+    # Init mlflow
+    mlflow.set_workspace(args.workspace) 
+    mlflow.set_experiment(args.experiment)
+
+    mlflow_run = mlflow.start_run(run_name=f"eval-{args.id}")
+
+    mlflow.log_params({
+        "run_id": args.id,
+        "image_size": args.image_size,
+        "iut_paths_file": args.iut_paths_file,
+        "subset": args.subset,
+        "undersampling": args.undersampling,
+        "model": args.model,
+        "load_path": args.load_path,
+    })
 
     # load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -136,6 +157,27 @@ if __name__ == '__main__':
 
     print("Eval set size is {}!".format(len(iut_paths_labels)))
 
+    # log dataset to MLflow
+    mlflow.log_artifact(args.iut_paths_file, "datasets")
+
+    dataframe = pd.DataFrame({
+        "input_image_paths": [iut_path for iut_path, _ in iut_paths_labels],
+        "labels": [label for _, label in iut_paths_labels]
+    })
+    dataset = mlflow.data.from_pandas(
+        dataframe,
+        source=args.repo,
+        digest=args.commit[:36],
+        name=args.name + ("-test")
+    )
+    mlflow.log_input(dataset, "test")
+
+    mlflow.log_params({
+        "repo": args.repo,
+        "commit": args.commit,
+        "name": args.name,
+    })
+
     # create/reset output folder
     print("Predicted maps will be saved in :%s" % args.out_dir)
     os.makedirs(args.out_dir, exist_ok=True)
@@ -150,6 +192,8 @@ if __name__ == '__main__':
                 f.write(iut_path + '\t' + str(label) + '\n')
 
         print('Eval paths file saved to %s' % (save_path))
+
+        mlflow.log_artifact(save_path, "datasets")
 
     # csv
     if (args.subset is None):
@@ -210,5 +254,10 @@ if __name__ == '__main__':
     ## confusion matrix
     save_path = os.path.join(args.out_dir, 'cm' + ('_' + args.subset if args.subset else '') + '.png')
     save_cm(y_true, y_pred, save_path)
+
+    # log results to MLflow
+    mlflow.log_artifact(args.out_dir, "results")
+
+    mlflow.end_run()
 
     if (args.subset is None): f_csv.close()
