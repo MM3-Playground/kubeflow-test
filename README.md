@@ -158,48 +158,39 @@ Training itself still starts from the Prefect UI and runs on the VM.
 
 ## E. Start workflows from the Prefect UI
 
-All container paths should use `/workspace`, regardless of the corresponding host path.
+The deployment asks for:
+- `code_repo_url`
+- `dataset_repo_url`
+- `settings`
+- optional `code_commit`
+- optional `dataset_commit`
 
-Example values for a new training run:
+For a manifest bundle, put `manifest_source_run_id` inside `settings` and omit
+`train_paths_file`, `val_paths_file`, and `test_paths_file`.
+
+Example `settings`:
 
 ```json
 {
-  "code_repo_url": "https://github.com/ORG/private-training-code.git",
-  "code_dir": "/workspace/code/private-training-code",
-  "dataset_repo_url": "https://github.com/ORG/private-dataset.git",
-  "dataset_dir": "/workspace/data/private-dataset",
-  "code_commit": null,
-  "dataset_commit": null,
-  "code_git_auth": {
-    "username": "x-access-token",
-    "token_env": "GITHUB_READ_TOKEN"
-  },
-  "dataset_git_auth": {
-    "username": "x-access-token",
-    "token_env": "GITHUB_READ_TOKEN"
-  },
-  "settings": {
-    "manifest_source_run_id": "MANIFEST_BUNDLE_RUN_ID",
-    "save_dir": "/workspace/runs/demo",
-    "run_name": "cpu-demo",
-    "model": "ours",
-    "device": "cpu",
-    "workers": 0,
-    "batch_size": 1,
-    "image_size": 128,
-    "n_epochs": 1,
-    "lr": 0.001,
-    "factor": 0.9,
-    "patience": 5,
-    "mlflow_workspace": "default",
-    "mlflow_experiment": "prefect-training-demo",
-    "mlflow_evaluation_experiment": "prefect-evaluation-demo",
-    "registered_model_name": "prefect-demo-model",
-    "minimum_accuracy": 0.0,
-    "candidate_alias": "candidate",
-    "promotion_alias": "champion",
-    "promote_on_pass": true
-  }
+  "save_dir": "/workspace/runs/demo",
+  "manifest_source_run_id": "YOUR_MANIFEST_RUN_ID",
+  "mlflow_workspace": "YOUR_WORKSPACE",
+  "mlflow_experiment": "YOUR_EXPERIMENT",
+  "run_name": "cpu-demo",
+  "model": "ours",
+  "image_size": 512,
+  "batch_size": 1,
+  "workers": 0,
+  "n_epochs": 2,
+  "lr": 0.001,
+  "factor": 0.9,
+  "patience": 5,
+  "device": "cpu",
+  "minimum_accuracy": 0.0,
+  "registered_model_name": "anime-attributor",
+  "candidate_alias": "candidate",
+  "promotion_alias": "champion",
+  "promote_on_pass": true
 }
 ```
 
@@ -254,3 +245,23 @@ train_local.py              CPU/single-process training entry point
 eval.py                     local evaluation entry point
 configs/                    example parameter and manifest configurations
 ```
+
+## Redeploy after changing flow parameters
+
+From a developer checkout, not from the worker VM:
+
+```bash
+git add .
+git commit -m "Simplify Prefect worker parameters"
+git push
+
+export PREFECT_API_URL="http://PREFECT_HOST:4200/api"
+export PREFECT_API_AUTH_STRING="username:password"
+export PIPELINE_REPOSITORY_URL="https://github.com/ORG/mlflow-prefect-test.git"
+export PIPELINE_REPOSITORY_BRANCH="main"
+
+prefect deploy --all
+```
+
+Deployments with the same names are updated in place. Refresh the Prefect UI before opening the run form.
+The generic worker does not need to be restarted because it pulls the repository for each run.

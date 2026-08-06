@@ -1,30 +1,17 @@
 {
   "source_mlflow_run_id": "RUN_ID",
-  "code_dir": "/workspace/code/retraining-code",
   "dataset_repo_url": "https://github.com/ORG/private-new-dataset.git",
-  "dataset_dir": "/workspace/data/new-dataset",
   "dataset_commit": null,
   "settings_overrides": {
     "save_dir": "/workspace/runs/retraining",
-    "train_paths_file": "/workspace/runs/retraining/training/train_datalad.txt",
-    "val_paths_file": "/workspace/runs/retraining/training/val_datalad.txt",
-    "test_paths_file": "/workspace/runs/retraining/training/test_datalad.txt",
+    "manifest_source_run_id": "MANIFEST_BUNDLE_RUN_ID",
     "n_epochs": 3,
     "lr": 0.0001,
     "run_name": "retrain-cpu",
     "device": "cpu",
-    "manifest_source_run_id": "MANIFEST_BUNDLE_RUN_ID_OR_NULL",
     "minimum_accuracy": 0.0,
     "registered_model_name": "anime-attributor",
     "promotion_alias": "champion",
     "promote_on_pass": true
-  },
-  "code_git_auth": {
-    "username": "x-access-token",
-    "token_env": "GITHUB_READ_TOKEN"
-  },
-  "dataset_git_auth": {
-    "username": "x-access-token",
-    "token_env": "GITHUB_READ_TOKEN"
   }
 }

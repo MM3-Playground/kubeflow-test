@@ -18,7 +18,7 @@ def run(cmd: list[str], cwd: str | None = None, env: Mapping[str, str] | None = 
         cmd,
         cwd=cwd,
         env=merged_env,
-        check=True,
+        check=False,
         text=True,
         capture_output=True,
     )
@@ -26,6 +26,12 @@ def run(cmd: list[str], cwd: str | None = None, env: Mapping[str, str] | None = 
         print(process.stdout, end="")
     if process.stderr:
         print(process.stderr, end="")
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"Command failed with exit code {process.returncode}: {' '.join(cmd)}\n"
+            f"stdout:\n{process.stdout}\n"
+            f"stderr:\n{process.stderr}"
+        )
     return process.stdout.strip()
 
 

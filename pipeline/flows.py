@@ -14,7 +14,6 @@ import mlflow
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from prefect import flow, get_run_logger, task
-from prefect.blocks.system import Secret
 
 from .helpers import (
     datalad_clone_or_update,
@@ -30,23 +29,24 @@ def _execution_id(prefix: str) -> str:
     return f"{prefix}-{time.strftime('%Y%m%d%H%M%S')}"
 
 
-def _resolve_git_credentials(auth: dict[str, Any] | None) -> tuple[str | None, str | None]:
-    if not auth:
+def _worker_git_credentials() -> tuple[str | None, str | None]:
+    """Read infrastructure-managed Git credentials from the worker environment."""
+    token = os.environ.get("GITHUB_READ_TOKEN")
+    if not token:
         return None, None
-    username = str(auth.get("username") or "x-access-token")
-    block_name = auth.get("token_secret_block")
-    env_name = auth.get("token_env")
-    if block_name and env_name:
-        raise ValueError("Specify only one of token_secret_block or token_env")
-    if block_name:
-        token = Secret.load(str(block_name)).get()
-    elif env_name:
-        token = os.environ.get(str(env_name))
-        if not token:
-            raise RuntimeError(f"Git token environment variable is not set: {env_name}")
-    else:
-        raise ValueError("Git auth requires token_secret_block or token_env")
-    return username, token
+    return os.environ.get("GITHUB_READ_USERNAME", "x-access-token"), token
+
+
+def _repo_name(repo_url: str) -> str:
+    name = Path(repo_url.rstrip("/").removesuffix(".git")).name
+    if not name:
+        raise ValueError(f"Cannot derive repository name from URL: {repo_url}")
+    return name
+
+
+def _workspace_path(kind: str, repo_url: str) -> str:
+    root = Path(os.environ.get("PIPELINE_WORK_ROOT", "/workspace")).expanduser()
+    return str((root / kind / _repo_name(repo_url)).resolve())
 
 
 def _safe_model_name(value: str) -> str:
@@ -55,17 +55,27 @@ def _safe_model_name(value: str) -> str:
 
 
 @task(name="prepare-codebase", retries=2, retry_delay_seconds=5)
-def prepare_code(repo_url: str, code_dir: str, commit: str | None = None,
-                 git_auth: dict[str, Any] | None = None) -> dict[str, str]:
-    username, token = _resolve_git_credentials(git_auth)
-    return git_clone_or_update(repo_url, code_dir, commit, username=username, token=token)
+def prepare_code(repo_url: str, commit: str | None = None) -> dict[str, str]:
+    username, token = _worker_git_credentials()
+    return git_clone_or_update(
+        repo_url,
+        _workspace_path("code", repo_url),
+        commit,
+        username=username,
+        token=token,
+    )
 
 
 @task(name="prepare-datalad-dataset", retries=2, retry_delay_seconds=10)
-def prepare_dataset(repo_url: str, dataset_dir: str, commit: str | None = None,
-                    git_auth: dict[str, Any] | None = None) -> dict[str, str]:
-    username, token = _resolve_git_credentials(git_auth)
-    return datalad_clone_or_update(repo_url, dataset_dir, commit, username=username, token=token)
+def prepare_dataset(repo_url: str, commit: str | None = None) -> dict[str, str]:
+    username, token = _worker_git_credentials()
+    return datalad_clone_or_update(
+        repo_url,
+        _workspace_path("data", repo_url),
+        commit,
+        username=username,
+        token=token,
+    )
 
 
 def _download_artifact(run_id: str, artifact_path: str, destination: Path) -> Path:
@@ -287,24 +297,28 @@ def _run_pipeline(code: dict[str, str], dataset: dict[str, str], settings: dict[
 
 
 @flow(name="new-training-and-evaluation", log_prints=True)
-def new_training_flow(code_repo_url: str, code_dir: str, dataset_repo_url: str,
-                      dataset_dir: str, settings: dict[str, Any], code_commit: str | None = None,
-                      dataset_commit: str | None = None,
-                      code_git_auth: dict[str, Any] | None = None,
-                      dataset_git_auth: dict[str, Any] | None = None) -> dict[str, Any]:
+def new_training_flow(
+    code_repo_url: str,
+    dataset_repo_url: str,
+    settings: dict[str, Any],
+    code_commit: str | None = None,
+    dataset_commit: str | None = None,
+) -> dict[str, Any]:
+    """Run a new experiment. Paths and Git credentials are worker infrastructure settings."""
     settings = {"minimum_accuracy": 0.0, "promote_on_pass": True, **settings, "pipeline_kind": "new"}
-    code = prepare_code(code_repo_url, code_dir, code_commit, code_git_auth)
-    dataset = prepare_dataset(dataset_repo_url, dataset_dir, dataset_commit, dataset_git_auth)
+    code = prepare_code(code_repo_url, code_commit)
+    dataset = prepare_dataset(dataset_repo_url, dataset_commit)
     settings = prepare_original_manifests(dataset, settings)
     return _run_pipeline(code, dataset, settings)
 
 
 @flow(name="reproduce-training-and-evaluation", log_prints=True)
-def reproduce_training_flow(source_mlflow_run_id: str, code_dir: str, dataset_dir: str,
-                            save_dir: str | None = None,
-                            settings_overrides: dict[str, Any] | None = None,
-                            code_git_auth: dict[str, Any] | None = None,
-                            dataset_git_auth: dict[str, Any] | None = None) -> dict[str, Any]:
+def reproduce_training_flow(
+    source_mlflow_run_id: str,
+    save_dir: str | None = None,
+    settings_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reproduce a run from MLflow-recorded code, data, settings, and conditioned manifests."""
     source = MlflowClient().get_run(source_mlflow_run_id)
     params, tags = dict(source.data.params), dict(source.data.tags)
     if "pipeline.settings_json" not in tags:
@@ -317,27 +331,42 @@ def reproduce_training_flow(source_mlflow_run_id: str, code_dir: str, dataset_di
     settings.setdefault("minimum_accuracy", 0.0)
     settings.setdefault("promote_on_pass", True)
 
-    code = prepare_code(tags["code.repo"], code_dir, tags["code.commit"], code_git_auth)
-    dataset = prepare_dataset(params["repo"], dataset_dir, params["commit"], dataset_git_auth)
+    code = prepare_code(tags["code.repo"], tags["code.commit"])
+    dataset = prepare_dataset(params["repo"], params["commit"])
     manifests_dir = Path(settings["save_dir"]).expanduser().resolve() / "reproduction-manifests" / source_mlflow_run_id
-    train_manifest, val_manifest = _download_conditioned_manifests(source_mlflow_run_id, manifests_dir, dataset["path"])
+    train_manifest, val_manifest = _download_conditioned_manifests(
+        source_mlflow_run_id, manifests_dir, dataset["path"]
+    )
     settings["train_paths_file"], settings["val_paths_file"] = train_manifest, val_manifest
-    # Test manifest is the original test set; materialize it from source run if available.
     try:
-        portable_test = _download_artifact(source_mlflow_run_id, "datasets/portable/test_datalad.txt", manifests_dir / "test")
-        settings["test_paths_file"] = str(materialize_manifest(portable_test, manifests_dir / "test_datalad.txt", dataset["path"]))
+        portable_test = _download_artifact(
+            source_mlflow_run_id,
+            "datasets/portable/test_datalad.txt",
+            manifests_dir / "test",
+        )
+        settings["test_paths_file"] = str(
+            materialize_manifest(
+                portable_test,
+                manifests_dir / "test_datalad.txt",
+                dataset["path"],
+            )
+        )
     except Exception:
         if not settings.get("test_paths_file"):
-            raise RuntimeError("Source run has no portable test manifest and no test_paths_file override")
+            raise RuntimeError(
+                "Source run has no portable test manifest and no test_paths_file override"
+            )
     return _run_pipeline(code, dataset, settings, use_conditioned_files=True)
 
 
 @flow(name="retrain-and-evaluate", log_prints=True)
-def retrain_flow(source_mlflow_run_id: str, code_dir: str, dataset_repo_url: str,
-                 dataset_dir: str, settings_overrides: dict[str, Any],
-                 dataset_commit: str | None = None,
-                 code_git_auth: dict[str, Any] | None = None,
-                 dataset_git_auth: dict[str, Any] | None = None) -> dict[str, Any]:
+def retrain_flow(
+    source_mlflow_run_id: str,
+    dataset_repo_url: str,
+    settings_overrides: dict[str, Any],
+    dataset_commit: str | None = None,
+) -> dict[str, Any]:
+    """Retrain source code with another dataset version and/or changed settings."""
     source = MlflowClient().get_run(source_mlflow_run_id)
     tags = dict(source.data.tags)
     if "pipeline.settings_json" not in tags:
@@ -347,7 +376,9 @@ def retrain_flow(source_mlflow_run_id: str, code_dir: str, dataset_repo_url: str
     settings["pipeline_kind"] = "retrain"
     settings.setdefault("minimum_accuracy", 0.0)
     settings.setdefault("promote_on_pass", True)
-    code = prepare_code(tags["code.repo"], code_dir, tags["code.commit"], code_git_auth)
-    dataset = prepare_dataset(dataset_repo_url, dataset_dir, dataset_commit, dataset_git_auth)
+
+    code = prepare_code(tags["code.repo"], tags["code.commit"])
+    dataset = prepare_dataset(dataset_repo_url, dataset_commit)
     settings = prepare_original_manifests(dataset, settings)
     return _run_pipeline(code, dataset, settings)
+
