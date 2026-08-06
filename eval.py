@@ -7,6 +7,9 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import csv
 import random
+import json
+from pathlib import Path
+import pandas as pd
 
 import torch
 
@@ -23,6 +26,7 @@ from models.A import *
 from utils.pilresize import PILResize
 from utils.FCRDCT import *
 from utils.tsne import *
+from pipeline.helpers import write_portable_manifest
 
 def read_paths(iut_paths_file, undersampling, subset):
     distribution = dict()
@@ -96,6 +100,7 @@ def parse_args():
     parser.add_argument("--repo", type=str, help="repository URL")
     parser.add_argument("--commit", type=str, help="commit hash")
     parser.add_argument("--name", type=str, help="name of the dataset")
+    parser.add_argument("--dataset_root", type=str)
 
     ## MLflow
     parser.add_argument("--workspace", type=str, help="workspace name")
@@ -112,6 +117,9 @@ if __name__ == '__main__':
     mlflow.set_experiment(args.experiment)
 
     mlflow_run = mlflow.start_run(run_name=f"eval-{args.id}")
+    parent_run_id = os.environ.get("PARENT_MLFLOW_RUN_ID")
+    if parent_run_id:
+        mlflow.set_tag("lineage.parent_run_id", parent_run_id)
 
     mlflow.log_params({
         "run_id": args.id,
@@ -159,6 +167,13 @@ if __name__ == '__main__':
 
     # log dataset to MLflow
     mlflow.log_artifact(args.iut_paths_file, "datasets")
+    if args.dataset_root:
+        portable_test = write_portable_manifest(
+            args.iut_paths_file,
+            Path(args.out_dir) / "test_datalad.txt",
+            args.dataset_root,
+        )
+        mlflow.log_artifact(str(portable_test), "datasets/portable")
 
     dataframe = pd.DataFrame({
         "input_image_paths": [iut_path for iut_path, _ in iut_paths_labels],
@@ -238,7 +253,7 @@ if __name__ == '__main__':
         # prediction
         with torch.no_grad():
             out = model(img.unsqueeze(0))
-        y = 1 if out > 0.5 else 0
+        y = int((torch.sigmoid(out).item()) > 0.5)
         
         y_pred.append(y)
         y_true.append(lab)
@@ -249,15 +264,22 @@ if __name__ == '__main__':
             writer.writerow(row)
 
     ## accuracy
-    print("acc%s: %.4f" % ((' (' + args.subset + ')' if args.subset else ''), accuracy_score(y_true, y_pred)))
+    accuracy = accuracy_score(y_true, y_pred)
+    print("acc%s: %.4f" % ((' (' + args.subset + ')' if args.subset else ''), accuracy))
 
     ## confusion matrix
     save_path = os.path.join(args.out_dir, 'cm' + ('_' + args.subset if args.subset else '') + '.png')
     save_cm(y_true, y_pred, save_path)
 
     # log results to MLflow
-    mlflow.log_artifact(args.out_dir, "results")
-
+    mlflow.log_metric("accuracy", float(accuracy))
+    mlflow.log_artifacts(args.out_dir, "results")
+    if args.subset is None:
+        f_csv.close()
+    result_dir = Path(os.environ.get("SAVE_DIR", args.out_dir)) / "pipeline-results"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    result = {"execution_id": str(args.id), "mlflow_run_id": mlflow_run.info.run_id, "parent_mlflow_run_id": parent_run_id, "accuracy": float(accuracy), "output_dir": str(Path(args.out_dir).resolve())}
+    result_path = result_dir / f"eval-{args.id}.json"
+    result_path.write_text(json.dumps(result, indent=2))
+    mlflow.log_artifact(str(result_path), "pipeline")
     mlflow.end_run()
-
-    if (args.subset is None): f_csv.close()

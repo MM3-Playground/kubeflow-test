@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Runtime outputs
+checkpoints/
+logs/
+evaluations/
+pipeline-results/
+reproduction-manifests/
+mlruns/
+*.pth
+*.pt
+*.ckpt
+
+# Local configuration and secrets
+configs/*.local.json
+!.gitkeep
+
+# Local clones and downloaded datasets
+work/
+data/
+runs/
+
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+*.token
+
+worker.env
+.manifest-upload/
+uv-cache/
+
+# Generic worker/demo configuration
+.env
+prefect-workspace/

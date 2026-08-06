@@ -1,0 +1,63 @@
+name: mlflow-prefect-test
+prefect-version: null
+
+build: null
+push: null
+
+# This repository is NOT expected to exist on the worker VM.
+# Run `prefect deploy --all` from a developer checkout. The deployment stores
+# these pull instructions; the ProcessWorker executes them for every flow run.
+pull:
+  - prefect.deployments.steps.git_clone:
+      id: pull-code
+      repository: "{{ $PIPELINE_REPOSITORY_URL }}"
+      branch: "{{ $PIPELINE_REPOSITORY_BRANCH }}"
+      access_token: "{{ prefect.blocks.secret.github-read-token }}"
+
+  - prefect.deployments.steps.pip_install_requirements:
+      directory: "{{ pull-code.directory }}"
+      requirements_file: requirements-worker.txt
+
+  - prefect.deployments.steps.set_working_directory:
+      directory: "{{ pull-code.directory }}"
+
+deployments:
+  - name: upload-manifest-bundle
+    description: Upload user-prepared portable DataLad manifests to MLflow.
+    entrypoint: pipeline/flows.py:upload_manifest_bundle_flow
+    work_pool:
+      name: local-pool
+      work_queue_name: null
+      job_variables: {}
+    parameters: {}
+    schedules: []
+
+  - name: new-local-training
+    description: Clone/update code and DataLad data, train locally, evaluate, register, and promote.
+    entrypoint: pipeline/flows.py:new_training_flow
+    work_pool:
+      name: local-pool
+      work_queue_name: null
+      job_variables: {}
+    parameters: {}
+    schedules: []
+
+  - name: reproduce-local-training
+    description: Reproduce an MLflow run using its exact code, data commit, and conditioned manifests.
+    entrypoint: pipeline/flows.py:reproduce_training_flow
+    work_pool:
+      name: local-pool
+      work_queue_name: null
+      job_variables: {}
+    parameters: {}
+    schedules: []
+
+  - name: retrain-local-model
+    description: Retrain from an MLflow run with changed settings or dataset, then evaluate and promote.
+    entrypoint: pipeline/flows.py:retrain_flow
+    work_pool:
+      name: local-pool
+      work_queue_name: null
+      job_variables: {}
+    parameters: {}
+    schedules: []

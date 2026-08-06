@@ -1,0 +1,20 @@
+{
+  "source_mlflow_run_id": "RUN_ID",
+  "code_dir": "/workspace/code/reproduced-code",
+  "dataset_dir": "/workspace/data/reproduced-dataset",
+  "save_dir": "/workspace/runs/reproduction",
+  "settings_overrides": {
+    "device": "cpu",
+    "minimum_accuracy": 0.0,
+    "registered_model_name": "anime-attributor-reproduction",
+    "promotion_alias": "champion"
+  },
+  "code_git_auth": {
+    "username": "x-access-token",
+    "token_env": "GITHUB_READ_TOKEN"
+  },
+  "dataset_git_auth": {
+    "username": "x-access-token",
+    "token_env": "GITHUB_READ_TOKEN"
+  }
+}

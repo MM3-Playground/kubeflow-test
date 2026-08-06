@@ -1,4 +1,0 @@
-onnxruntime
-numpy
-pillow
-boto3

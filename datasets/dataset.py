@@ -1,5 +1,6 @@
 
 import random
+from pathlib import Path
 import cv2
 import pandas as pd
 
@@ -53,7 +54,7 @@ class AnimeDataset(Dataset):
         self.input_image_paths = []
         self.labels = []
 
-        self.save_path = 'cond_paths_file_' + str(id) + ('_train' if not val else '_val') + '.txt'
+        self.save_path = str(Path(iut_paths_file).resolve().parent / ('cond_paths_file_' + str(id) + ('_train' if not val else '_val') + '.txt'))
 
         if ('cond' not in iut_paths_file):
             distribution = dict()
@@ -81,7 +82,7 @@ class AnimeDataset(Dataset):
             if (global_rank == 0):
                 with open(self.save_path, 'w') as f:
                     for i in range(len(self.input_image_paths)):
-                        f.write(self.input_image_paths[i] + str(self.labels[i]) + '\n')
+                        f.write(self.input_image_paths[i] + '\t' + str(self.labels[i]) + '\n')
 
                 print('Final paths file (%s) for %s saved to %s' % (('train' if not val else 'val'), str(id), self.save_path))
 
@@ -91,13 +92,13 @@ class AnimeDataset(Dataset):
             with open(iut_paths_file, 'r') as f:
                 lines = f.readlines()
                 for l in lines:
-                    parts = l.rstrip().split(' ')
+                    parts = l.rstrip().split('\t')
                     self.input_image_paths.append(parts[0])
                     self.labels.append(int(parts[1]))
 
         # save to mlflow
         if global_rank == 0:
-            mlflow.log_artifact(self.save_path, "datasets")
+            mlflow.log_artifact(self.save_path if Path(self.save_path).exists() else iut_paths_file, "datasets")
             
             dataframe = pd.DataFrame({
                 "input_image_paths": self.input_image_paths,

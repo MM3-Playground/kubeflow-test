@@ -1,4 +1,7 @@
 import os
+import json
+import base64
+from pathlib import Path
 from datetime import timedelta
 
 import torch
@@ -33,6 +36,9 @@ def main():
         mlflow.set_experiment(args.experiment)
 
         mlflow_run = mlflow.start_run(run_name=f"train-{args.run_name}-{args.id}")
+        settings_b64 = os.environ.get("PIPELINE_SETTINGS_B64", "")
+        settings_json = base64.b64decode(settings_b64).decode() if settings_b64 else "{}"
+        mlflow.set_tags({"code.repo": os.environ.get("CODE_REPO", ""), "code.commit": os.environ.get("CODE_COMMIT", ""), "pipeline.settings_json": settings_json, "pipeline.kind": os.environ.get("PIPELINE_KIND", "new")})
 
         mlflow.log_params({
             "run_id": args.id,
@@ -101,6 +107,23 @@ def main():
             prev_best_val_loss, prev_n_last_epochs)
 
     if global_rank == 0 and mlflow_run is not None:
+        checkpoint_path = None
+        candidates = sorted(Path(checkpoint_dir).glob(f"{args.id}_best_*.pth"), key=lambda x: x.stat().st_mtime, reverse=True)
+        if not candidates:
+            candidates = sorted(Path(checkpoint_dir).glob(f"{args.id}_last_*.pth"), key=lambda x: x.stat().st_mtime, reverse=True)
+        if candidates:
+            checkpoint_path = str(candidates[0].resolve())
+        result_dir = Path(args.save_dir) / "pipeline-results"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result = {
+            "slurm_job_id": str(args.id),
+            "mlflow_run_id": mlflow_run.info.run_id,
+            "best_checkpoint": checkpoint_path,
+            "train_conditioned_paths_file": str(Path(args.paths_file).resolve().parent / f"cond_paths_file_{args.id}_train.txt"),
+            "val_conditioned_paths_file": str(Path(args.val_paths_file).resolve().parent / f"cond_paths_file_{args.id}_val.txt") if args.val_paths_file else None,
+        }
+        (result_dir / f"train-{args.id}.json").write_text(json.dumps(result, indent=2))
+        mlflow.log_artifact(str(result_dir / f"train-{args.id}.json"), "pipeline")
         mlflow.end_run()
 
 if __name__ == '__main__':

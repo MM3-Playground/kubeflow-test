@@ -171,8 +171,8 @@ def init_dataset(args, global_rank, world_size, val = False):
 
     dataset = AnimeDataset(global_rank,
                                 (args.paths_file if not val else args.val_paths_file),
-                                args.id,
                                 args.image_size,
+                                args.id,
                                 dct,
                                 (args.n_c_samples if not val else args.val_n_c_samples),
                                 val,
@@ -239,7 +239,7 @@ def load_dicts(args,
     if args.load_path != None and args.load_path != 'timm':
         print('Load pretrained model: {}'.format(args.load_path))
 
-        model.load_state_dict(torch.load(args.load_path))
+        model.load_state_dict(torch.load(args.load_path, map_location='cuda'))
 
     return model
 
@@ -303,6 +303,8 @@ def save_state(checkpoint_dir, id, epoch, save_best, last_best,
     
     state = {'optimizer': optimizer.state_dict(), 'lr_scheduler': lr_scheduler.state_dict(),
              'best_val_loss': best_val_loss, 'n_last_epochs': n_last_epochs}
+    if lr_scheduler is None:
+        return
 
     # save last
     torch.save(state,
@@ -450,7 +452,7 @@ def train(args, global_rank, world_size, sync, get_module,
             if (val_dataloader):
                 epoch_val_loss_avg = epoch_val_loss / len(val_dataloader)
                 best_val_loss_avg = best_val_loss / len(val_dataloader)
-                lr_best_val_loss_avg = lr_scheduler.best / len(val_dataloader)
+                lr_best_val_loss_avg = (lr_scheduler.best / len(val_dataloader)) if hasattr(lr_scheduler, 'best') else best_val_loss_avg
             else:
                 epoch_val_loss_avg = 0
                 best_val_loss_avg = 0
@@ -461,7 +463,7 @@ def train(args, global_rank, world_size, sync, get_module,
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
                   f"[Epoch {epoch}/{args.n_epochs - 1}]"
                   f"[Loss {epoch_loss_avg:.3e}]"
-                  f"[Val Loss {epoch_val_loss_avg:.3e} (Best {best_val_loss_avg:.3e} @{n_last_epochs:d}, LR Best {lr_best_val_loss_avg:.3e} @{lr_scheduler.num_bad_epochs:d})]"
+                  f"[Val Loss {epoch_val_loss_avg:.3e} (Best {best_val_loss_avg:.3e} @{n_last_epochs:d}, LR Best {lr_best_val_loss_avg:.3e} @{getattr(lr_scheduler, 'num_bad_epochs', 0):d})]"
                   f"[LR {global_lr:.3e}]")
 
             writer.add_scalar("Epoch LearningRate", global_lr, epoch)
@@ -482,11 +484,11 @@ def train(args, global_rank, world_size, sync, get_module,
             # save state
             if global_rank == 0:
                 save_state(checkpoint_dir, args.id, epoch, 
-                lr_scheduler.num_bad_epochs == 0, lr_last_best,
+                getattr(lr_scheduler, 'num_bad_epochs', 0) == 0, lr_last_best,
                  optimizer, lr_scheduler,
                  best_val_loss, n_last_epochs)
 
-                if lr_scheduler.num_bad_epochs == 0:
+                if getattr(lr_scheduler, 'num_bad_epochs', 0) == 0:
                     lr_last_best = epoch
 
             # log to MLflow
@@ -512,7 +514,7 @@ def train(args, global_rank, world_size, sync, get_module,
             print("LR changed to %.3e" % (lr_after_step * world_size))
 
         # check early_stopping
-        if (n_last_epochs > args.n_early or lr_scheduler.num_bad_epochs > args.n_early):
+        if (n_last_epochs > args.n_early or getattr(lr_scheduler, 'num_bad_epochs', 0) > args.n_early):
             print('Early stopping')
             break
 

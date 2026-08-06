@@ -1,0 +1,8 @@
+{
+  "train_paths_file": "/path/on/laptop/train_datalad.txt",
+  "val_paths_file": "/path/on/laptop/val_datalad.txt",
+  "test_paths_file": "/path/on/laptop/test_datalad.txt",
+  "dataset_root": "/path/on/laptop/datalad-dataset",
+  "mlflow_workspace": "WORKSPACE",
+  "mlflow_experiment": "pipeline-manifests"
+}
