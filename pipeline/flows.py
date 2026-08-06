@@ -78,8 +78,10 @@ def prepare_dataset(repo_url: str, commit: str | None = None) -> dict[str, str]:
     )
 
 
-def _download_artifact(run_id: str, artifact_path: str, destination: Path) -> Path:
+def _download_artifact(run_id: str, artifact_path: str, destination: Path, workspace: str | None = None) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
+    if workspace:
+        mlflow.set_workspace(workspace)
     downloaded = Path(MlflowClient().download_artifacts(run_id, artifact_path, str(destination)))
     return downloaded.resolve()
 
@@ -100,7 +102,7 @@ def prepare_original_manifests(dataset: dict[str, str], settings: dict[str, Any]
     for key, filename in names.items():
         configured = updated.get(key)
         if source_run_id:
-            portable = _download_artifact(str(source_run_id), f"manifests/{filename}", materialized_dir / "portable")
+            portable = _download_artifact(str(source_run_id), f"manifests/{filename}", materialized_dir / "portable", workspace=updated.get("mlflow_workspace"))
             updated[key] = str(materialize_manifest(
                 portable, materialized_dir / filename, dataset["path"]
             ))
@@ -343,6 +345,7 @@ def reproduce_training_flow(
             source_mlflow_run_id,
             "datasets/portable/test_datalad.txt",
             manifests_dir / "test",
+            workspace=settings.get("mlflow_workspace"),
         )
         settings["test_paths_file"] = str(
             materialize_manifest(
