@@ -134,6 +134,11 @@ Because files on a laptop cannot be passed as filesystem paths to a VM worker, u
 ```bash
 cp configs/manifests.example.json configs/manifests.local.json
 # Edit dataset_root and the three local manifest paths.
+
+export MLFLOW_TRACKING_URI="http://<host>:<port>/"
+export MLFLOW_TRACKING_USERNAME="<username>"
+export MLFLOW_TRACKING_PASSWORD="<password>"
+
 python run_pipeline.py manifests --config configs/manifests.local.json
 ```
 
