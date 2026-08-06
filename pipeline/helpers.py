@@ -136,7 +136,7 @@ def datalad_clone_or_update(
         run(["datalad", "get", "-r", "."], cwd=str(dataset_path), env=auth_env)
 
         resolved_commit = run(["git", "rev-parse", "HEAD"], cwd=str(dataset_path), env=auth_env)
-        dataset_id = run(["git", "config", "--get", "datalad.dataset.id"], str(path), auth_env)
+        dataset_id = run(["datalad", "configuration", "get", "-d", str(dataset_path), "datalad.dataset.id"], env=auth_env)
 
         remote_url = run(["git", "remote", "get-url", "origin"], cwd=str(dataset_path), env=auth_env)
 
