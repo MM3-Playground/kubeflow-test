@@ -110,36 +110,41 @@ def git_clone_or_update(
 
 def datalad_clone_or_update(
     repo: str,
-    dest: str,
+    path: str | Path,
     commit: str | None = None,
     *,
     username: str | None = None,
     token: str | None = None,
 ) -> dict[str, str]:
-    path = Path(dest).expanduser()
+    dataset_path = Path(path).expanduser().resolve()
+
     with git_https_auth_env(username, token) as auth_env:
-        if not path.exists():
-            run(["datalad", "clone", repo, str(path)], env=auth_env)
-        elif not (path / ".git").exists():
-            raise RuntimeError(f"Dataset destination exists but is not a DataLad/Git dataset: {path}")
+        if not dataset_path.exists():
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
 
-        run(["git", "fetch", "--all", "--tags", "--prune"], str(path), auth_env)
+            run(["datalad", "clone", repo, str(dataset_path)], env=auth_env)
+        elif not (dataset_path / ".git").exists():
+            raise RuntimeError(
+                f"Dataset path already exists but is not a Git/DataLad "
+                f"repository: {dataset_path}"
+            )
+
         if commit:
-            run(["git", "checkout", "--detach", commit], str(path), auth_env)
+            run(["git", "checkout", "--detach", commit], cwd=str(dataset_path), env=auth_env)
 
-        # The same Git credentials remain available to git-annex/DataLad subprocesses.
-        # Additional credentials may still be required for S3, WebDAV, or other annex remotes.
-        run(["datalad", "get", "-r", "."], str(path), auth_env)
+        # Materialize all annexed content recursively.
+        run(["datalad", "get", "-r", "."], cwd=str(dataset_path), env=auth_env)
 
-        resolved = run(["git", "rev-parse", "HEAD"], str(path), auth_env)
-        origin = run(["git", "remote", "get-url", "origin"], str(path), auth_env)
+        resolved_commit = run(["git", "rev-parse", "HEAD"], cwd=str(dataset_path), env=auth_env)
         dataset_id = run(["git", "config", "--get", "datalad.dataset.id"], str(path), auth_env)
 
+        remote_url = run(["git", "remote", "get-url", "origin"], cwd=str(dataset_path), env=auth_env)
+
     return {
-        "path": str(path.resolve()),
-        "repo": origin,
-        "commit": resolved,
-        "name": Path(origin.removesuffix(".git")).name,
+        "repo": remote_url,
+        "path": str(dataset_path),
+        "commit": resolved_commit,
+        "name": dataset_path.name,
         "dataset_id": dataset_id,
     }
 
