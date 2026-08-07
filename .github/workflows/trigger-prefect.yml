@@ -13,11 +13,10 @@ jobs:
           PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
           PREFECT_API_AUTH_STRING: ${{ secrets.PREFECT_API_AUTH_STRING }}
 
-          CODE_REPOSITORY: ${{ vars.CODE_REPOSITORY }}
           DATA_REPOSITORY: ${{ vars.DATA_REPOSITORY }}
           PIPELINE_SETTINGS: ${{ vars.PIPELINE_SETTINGS }}
         run: |
           prefect deployment run "new-training-and-evaluation/new-local-training" \
-          --param code_repo_url="${CODE_REPOSITORY}" \
+          --param code_repo_url="https://github.com/${GITHUB_REPOSITORY}.git" \
           --param dataset_repo_url="${DATA_REPOSITORY}" \
           --param settings="${PIPELINE_SETTINGS}"
