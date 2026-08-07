@@ -45,4 +45,5 @@ uv-cache/
 prefect-workspace/
 
 # Prefect
+generate_prefect_yaml.py
 prefect.yaml

@@ -14,6 +14,7 @@ import mlflow
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from prefect import flow, get_run_logger, task
+from prefect.blocks.system import Secret
 
 from .helpers import (
     datalad_clone_or_update,
@@ -31,7 +32,7 @@ def _execution_id(prefix: str) -> str:
 
 def _worker_git_credentials() -> tuple[str | None, str | None]:
     """Read infrastructure-managed Git credentials from the worker environment."""
-    token = os.environ.get("GITHUB_READ_TOKEN")
+    token = Secret.load(os.environ.get("GITHUB_SECRET_NAME")).get()
     if not token:
         return None, None
     return os.environ.get("GITHUB_READ_USERNAME", "x-access-token"), token
