@@ -13,4 +13,4 @@ jobs:
           PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
           PREFECT_API_AUTH_STRING: ${{ secrets.PREFECT_API_AUTH_STRING }}
         run: |
-          prefect deployment run "new_training_flow/new-local-training" --param code_revision="${GITHUB_SHA}"
+          prefect deployment run "new-training-and-evaluation/new-local-training" --param code_revision="${GITHUB_SHA}"
