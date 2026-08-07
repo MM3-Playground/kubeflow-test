@@ -1,0 +1,16 @@
+name: Trigger Prefect
+on:
+  push:
+    branches: [main]
+jobs:
+  trigger-prefect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Prefect client
+        run: pip install prefect
+      - name: Start deployment run
+        env:
+          PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
+          PREFECT_API_AUTH_STRING: ${{ secrets.PREFECT_API_AUTH_STRING }}
+        run: |
+          prefect deployment run "new_training_flow/new-local-training" --param code_revision="${GITHUB_SHA}"

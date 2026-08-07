@@ -43,3 +43,6 @@ uv-cache/
 # Generic worker/demo configuration
 .env
 prefect-workspace/
+
+# Prefect
+prefect.yaml
