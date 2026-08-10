@@ -117,8 +117,8 @@ def main() -> None:
         settings_json = base64.b64decode(settings_b64).decode() if settings_b64 else "{}"
         mlflow.set_tags(
             {
-                "code.repo": os.environ.get("CODE_REPO", ""),
-                "code.commit": os.environ.get("CODE_COMMIT", ""),
+                "mlflow.source.git.repoURL": os.environ.get("CODE_REPO", ""),
+                "mlflow.source.git.commit": os.environ.get("CODE_COMMIT", ""),
                 "pipeline.settings_json": settings_json,
                 "pipeline.kind": os.environ.get("PIPELINE_KIND", "new"),
                 "pipeline.execution_backend": "local-process",
