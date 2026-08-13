@@ -764,7 +764,7 @@ def evaluate_local(
 
 @dsl.component(
     base_image="python:3.11-slim",
-    packages_to_install=["model-registry==0.3.12"],
+    packages_to_install=["model-registry>=0.3.14,<0.4"],
 )
 def register_model(
     code_source: Input[Artifact],
@@ -964,7 +964,7 @@ def new_training_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor",
     promote_on_pass: bool = True,
-    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
+    registry_address: str = "http://model-registry-service",
     registry_port: int = 8080,
 ):
     _workflow(
@@ -1022,7 +1022,7 @@ def reproduce_training_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor-reproduction",
     promote_on_pass: bool = False,
-    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
+    registry_address: str = "http://model-registry-service",
     registry_port: int = 8080,
 ):
     _workflow(
@@ -1080,7 +1080,7 @@ def retrain_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor",
     promote_on_pass: bool = True,
-    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
+    registry_address: str = "http://model-registry-service",
     registry_port: int = 8080,
 ):
     _workflow(
