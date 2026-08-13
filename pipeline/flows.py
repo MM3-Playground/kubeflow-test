@@ -886,7 +886,7 @@ def _workflow(
         artifact_uri=manifest_bundle_uri,
         artifact_class=Dataset,
         reimport=False,
-    ).set_display_name("Import manifest bundle")
+    )
 
     train = train_local(
         code_repo_url=code_repo_url,
