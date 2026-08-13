@@ -11,14 +11,6 @@ from kfp.dsl import (
     Output,
 )
 
-
-class SourceOutputs(NamedTuple):
-    code_commit: str
-    dataset_commit: str
-    dataset_id: str
-    dataset_name: str
-
-
 @dsl.component(base_image="python:3.11-slim")
 def write_manifest_bundle(
     train_b64: str,
@@ -77,7 +69,15 @@ def resolve_sources(
     dataset_commit: str,
     code_source: Output[Artifact],
     dataset: Output[Dataset],
-) -> SourceOutputs:
+) -> NamedTuple(
+    "Outputs",
+    [
+        ("code_commit", str),
+        ("dataset_commit", str),
+        ("dataset_id", str),
+        ("dataset_name", str),
+    ],
+):
     import json
     import os
     import stat
@@ -187,7 +187,7 @@ def resolve_sources(
     if askpass_path:
         Path(askpass_path).unlink(missing_ok=True)
 
-    return SourceOutputs(
+    return (
         resolved_code_commit,
         resolved_dataset_commit,
         dataset_id,
