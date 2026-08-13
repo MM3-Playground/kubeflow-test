@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import NamedTuple
 
 from kfp import dsl, kubernetes
@@ -934,7 +932,7 @@ def _workflow(
         trained_model=train.outputs["trained_model"],
         training_metadata=train.outputs["training_metadata"],
         evaluation_metadata=evaluate.outputs["evaluation_metadata"],
-        accuracy=evaluate.output,
+        accuracy=evaluate.outputs["Output"],
         minimum_accuracy=minimum_accuracy,
         registered_model_name=registered_model_name,
         promote_on_pass=promote_on_pass,
