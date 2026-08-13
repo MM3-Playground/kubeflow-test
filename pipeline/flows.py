@@ -159,9 +159,9 @@ def resolve_sources(
         [
             "datalad",
             "configuration",
-            "get",
             "-d",
             str(data_path),
+            "get",
             "datalad.dataset.id",
         ]
     )
