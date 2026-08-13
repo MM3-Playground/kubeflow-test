@@ -886,7 +886,7 @@ def _workflow(
         artifact_uri=manifest_bundle_uri,
         artifact_class=Dataset,
         reimport=False,
-    )
+    ).set_display_name("Import manifest bundle")
 
     train = train_local(
         code_repo_url=code_repo_url,
@@ -910,7 +910,7 @@ def _workflow(
         n_c_samples=n_c_samples,
         val_n_c_samples=val_n_c_samples,
         load_model_uri=load_model_uri,
-    )
+    ).set_display_name("Train model")
     _configure_runtime_task(train)
 
     evaluate = evaluate_local(
@@ -921,7 +921,7 @@ def _workflow(
         pipeline_kind=pipeline_kind,
         model=model,
         image_size=image_size,
-    )
+    ).set_display_name("Evaluate model")
     _configure_runtime_task(evaluate)
 
     register_model(
@@ -936,7 +936,7 @@ def _workflow(
         promote_on_pass=promote_on_pass,
         registry_address=registry_address,
         registry_port=registry_port,
-    )
+    ).set_display_name("Register model")
 
 
 @dsl.pipeline(name="new-training-and-evaluation")
