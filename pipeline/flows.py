@@ -718,7 +718,7 @@ def evaluate_local(
 
 @dsl.component(
     base_image="python:3.11-slim",
-    packages_to_install=["model-registry==0.3.12"],
+    packages_to_install=["model-registry>=0.3.14,<0.4"],
 )
 def register_model(
     code_source: Input[Artifact],
