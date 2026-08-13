@@ -14,7 +14,7 @@ def convert2DNADet(img):
         A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)), # no need to divide by 255 after normalization
         ToTensorV2()
     ])
-    
+
     img = img.detach()
     img = torch.stack([transform(image = (i.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8))['image'] for i in img.unbind()]) # permute: convert back to RGB
 

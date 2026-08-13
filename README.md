@@ -1,267 +1,185 @@
-# DataLad + MLflow + Prefect local ProcessWorker demo
+# DataLad + Kubeflow Pipelines demo
 
-This repository demonstrates four workflows on a CPU-only test VM:
+This is a deliberately minimal conversion of `MM3-Playground/mlflow-prefect-test` from **MLflow + Prefect** to **Kubeflow**. The training/evaluation filenames and research logic remain in place; the major replacement is the orchestration/tracking layer.
 
-1. upload the user-prepared `train_datalad.txt`, `val_datalad.txt`, and `test_datalad.txt` files to MLflow;
-2. start a new training run and automatically evaluate it;
-3. reproduce a prior MLflow training run using its recorded code/data commits and conditioned manifests;
-4. retrain with changed settings or a changed DataLad version, evaluate, register the model, and promote it when the accuracy threshold passes.
+This POC assumes **CPU-only** training and continues to clone/materialize DataLad datasets inside each run.
 
-The default `minimum_accuracy` is `0.0`, so every successfully evaluated demo model is accepted and the promotion alias is moved.
+## What is tracked
 
-## Architecture
+See [`TRACKING_MAPPING.md`](TRACKING_MAPPING.md) for the detailed MLflow → Kubeflow mapping.
 
-The worker VM is intentionally generic. It initially contains only:
+In short, each run tracks:
 
-```text
-compose.yaml
-.env
-persistent workspace directory
-```
+- all user-facing training hyperparameters as KFP run parameters;
+- code repository + exact commit;
+- DataLad repository + exact commit + DataLad dataset ID;
+- original manifest bundle;
+- conditioned train/validation datasets (portable manifests);
+- evaluated test dataset;
+- selected model and all checkpoints;
+- per-epoch training history and scalar summary metrics;
+- evaluation accuracy and a native KFP confusion matrix;
+- full evaluation result archive;
+- CPU/RSS system metric history as CSV artifacts;
+- model SHA256 and provenance/configuration in Kubeflow Model Registry.
 
-It does **not** need this repository checked out.
+KFP artifact passing provides native lineage in ML Metadata.
 
-```text
-Developer machine                         Test VM
------------------                         -------
-repository checkout                       Prefect ProcessWorker container
-prefect deploy --all  ────────────────►    pulls this repository per run
-                                          installs requirements-worker.txt
-Prefect UI Run       ────────────────►     executes flow in subprocess
-                                          clones training code + DataLad data
-                                          trains/evaluates on CPU
-                                          logs/registers/promotes in MLflow
-```
-
-Prefect deployment pull steps clone this repository for each run and install its Python dependencies. The generic worker only installs `git`, `git-annex`, and CA certificates before starting.
-
----
-
-## One-time setup on the developer/user machine
-
-The developer machine contains the repository checkout and performs the first deployment registration.
-
-### 1. Install only the deployment tooling
-
-A full training environment is not needed locally. Use a temporary virtual environment, pipx, or uv. For example:
+## Install locally to compile pipeline YAML
 
 ```bash
-python -m venv .deploy-venv
-source .deploy-venv/bin/activate
-python -m pip install "prefect>=3,<4"
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Configure the local Prefect client:
+## 1. First-time manifest upload
 
-```bash
-export PREFECT_API_URL="http://PREFECT_HOST:4200/api"
-export PREFECT_API_AUTH_STRING="admin:replace-me"
-```
-
-### 2. Create the Prefect GitHub Secret block
-
-```bash
-export GITHUB_READ_TOKEN="github_pat_..."
-python scripts/create_git_secret.py github-read-token --env GITHUB_READ_TOKEN
-unset GITHUB_READ_TOKEN
-```
-
-This stores the token in the Prefect backend as the Secret block expected by `prefect.yaml`:
-
-```text
-github-read-token
-```
-
-The worker still has `GITHUB_READ_TOKEN` in its `.env` because pipeline tasks may clone a separate private training-code repository and a private DataLad repository.
-
-### 3. Push this repository first
-
-The worker pulls the pipeline from Git, so commit and push the final repository before deploying:
-
-```bash
-git add .
-git commit -m "Add Prefect DataLad MLflow demo"
-git push
-```
-
-### 4. Register deployments from the local checkout
-
-Set the URL and branch of **this pipeline repository**:
-
-```bash
-export PIPELINE_REPOSITORY_URL="https://github.com/ORG/mlflow-prefect-test.git"
-export PIPELINE_REPOSITORY_BRANCH="main"
-
-prefect deploy --all
-```
-
-`prefect deploy` registers these pull instructions; it does not copy the local repository to the VM. On each flow run, the ProcessWorker:
-
-1. clones `PIPELINE_REPOSITORY_URL`;
-2. installs `requirements-worker.txt` from that clone;
-3. changes into the cloned directory;
-4. imports and executes the selected flow.
-
-After deployment, the UI should show:
-
-```text
-upload-manifest-bundle/upload-manifest-bundle
-new-training-and-evaluation/new-local-training
-reproduce-training-and-evaluation/reproduce-local-training
-retrain-and-evaluate/retrain-local-model
-```
-
----
-
-## D. Upload the initial manifests
-
-The three original manifest files are prepared by the user before the first run:
-
-```text
-train_datalad.txt
-val_datalad.txt
-test_datalad.txt
-```
-
-They contain one tab-separated path/label pair per line:
-
-```text
-/path/to/image.png<TAB>0
-```
-
-Because files on a laptop cannot be passed as filesystem paths to a VM worker, upload them to MLflow first from the user machine:
+The `*_datalad.txt` files remain local and are ignored by Git.
 
 ```bash
 cp configs/manifests.example.json configs/manifests.local.json
-# Edit dataset_root and the three local manifest paths.
-
-export MLFLOW_TRACKING_URI="http://<host>:<port>/"
-export MLFLOW_TRACKING_USERNAME="<username>"
-export MLFLOW_TRACKING_PASSWORD="<password>"
-
+# edit the paths
 python run_pipeline.py manifests --config configs/manifests.local.json
 ```
 
-This creates a small MLflow run and prints `manifest_source_run_id`. The manifests are converted to portable dataset-relative paths before upload.
-
-Use that run ID in the new/retrain flow parameters:
-
-```json
-{
-  "manifest_source_run_id": "MLFLOW_RUN_ID"
-}
-```
-
-Training itself still starts from the Prefect UI and runs on the VM.
-
----
-
-## E. Start workflows from the Prefect UI
-
-The deployment asks for:
-- `code_repo_url`
-- `dataset_repo_url`
-- `settings`
-- optional `code_commit`
-- optional `dataset_commit`
-
-For a manifest bundle, put `manifest_source_run_id` inside `settings` and omit
-`train_paths_file`, `val_paths_file`, and `test_paths_file`.
-
-Example `settings`:
-
-```json
-{
-  "save_dir": "/workspace/runs/demo",
-  "manifest_source_run_id": "YOUR_MANIFEST_RUN_ID",
-  "mlflow_workspace": "YOUR_WORKSPACE",
-  "mlflow_experiment": "YOUR_EXPERIMENT",
-  "run_name": "cpu-demo",
-  "model": "ours",
-  "image_size": 512,
-  "batch_size": 1,
-  "workers": 0,
-  "n_epochs": 2,
-  "lr": 0.001,
-  "factor": 0.9,
-  "patience": 5,
-  "device": "cpu",
-  "minimum_accuracy": 0.0,
-  "registered_model_name": "anime-attributor",
-  "candidate_alias": "candidate",
-  "promotion_alias": "champion",
-  "promote_on_pass": true
-}
-```
-
-The new and retrain workflows use original `*_datalad.txt` manifests. Reproduction downloads and reuses the conditioned train/validation manifests logged by the source training run.
-
----
-
-## F. Dependency model
-
-The generic Compose worker does not know a project’s Python dependencies in advance. The repository owns them in:
+This creates:
 
 ```text
-requirements-worker.txt
-pyproject.toml
+compiled/upload-manifest-bundle.yaml
 ```
 
-For this demo, `requirements-worker.txt` is the runtime source used by the Prefect pull step. It explicitly includes CPU PyTorch and all training/evaluation dependencies.
+Upload and run it in KFP. It creates a `Dataset` artifact containing a ZIP with the three portable manifests. Copy that artifact's URI and use it as `manifest_bundle_uri`.
 
-Every flow run currently invokes `pip_install_requirements`. The Docker pip cache reduces repeated downloads, but packages are installed into the shared worker container environment. This is acceptable for a single-project demo but not ideal for concurrent heterogeneous projects. Later, use a Docker/Kubernetes worker with a project-specific image per flow run.
-
----
-
-## G. Model registration and promotion
-
-After evaluation, the pipeline:
-
-1. registers the MLflow model version;
-2. assigns the `candidate` alias;
-3. compares evaluation accuracy with `minimum_accuracy`;
-4. moves the promotion alias, default `champion`, when accepted.
-
-For the demo:
-
-```json
-"minimum_accuracy": 0.0
-```
-
-accepts every successful evaluation. Increase it later, for example to `0.90`.
-
----
-
-## H. Important files
-
-```text
-compose.worker-demo.yaml    generic worker VM service
-.env.demo.example           worker-side environment template
-prefect.yaml                deployments and runtime pull/install steps
-requirements-worker.txt     runtime dependencies, including CPU PyTorch
-pipeline/flows.py           new/reproduce/retrain/evaluate/register flows
-pipeline/helpers.py         private HTTPS Git/DataLad helpers
-train_local.py              CPU/single-process training entry point
-eval.py                     local evaluation entry point
-configs/                    example parameter and manifest configurations
-```
-
-## Redeploy after changing flow parameters
-
-From a developer checkout, not from the worker VM:
+## 2. Compile pipelines
 
 ```bash
-git add .
-git commit -m "Simplify Prefect worker parameters"
-git push
-
-export PREFECT_API_URL="http://PREFECT_HOST:4200/api"
-export PREFECT_API_AUTH_STRING="username:password"
-export PIPELINE_REPOSITORY_URL="https://github.com/ORG/mlflow-prefect-test.git"
-export PIPELINE_REPOSITORY_BRANCH="main"
-
-prefect deploy --all
+python run_pipeline.py new --config configs/new.example.json
+python run_pipeline.py reproduce --config configs/reproduce.example.json
+python run_pipeline.py retrain --config configs/retrain.example.json
 ```
 
-Deployments with the same names are updated in place. Refresh the Prefect UI before opening the run form.
-The generic worker does not need to be restarted because it pulls the repository for each run.
+The config files are examples/reference values. The generated KFP pipeline exposes the corresponding values directly as run parameters in the UI.
+
+## New training graph
+
+```text
+resolve_sources
+  ├── code_source Artifact
+  └── DataLad Dataset artifact
+           +
+     manifest Dataset
+           |
+           v
+       train_local
+       ├── Model
+       ├── checkpoints
+       ├── train/val Dataset artifacts
+       ├── Metrics
+       ├── training history
+       ├── metadata
+       └── system metrics
+           |
+           v
+      evaluate_local
+       ├── test Dataset
+       ├── accuracy Metrics
+       ├── ClassificationMetrics
+       ├── result archive
+       ├── metadata
+       └── system metrics
+           |
+           v
+    Kubeflow Model Registry
+```
+
+## Reproduction
+
+For exact reproduction, supply the exact source `code_commit`, `dataset_commit`, and the source run's conditioned-manifest bundle URI. KFP also supports cloning/rerunning a prior run from the UI.
+
+## Important differences from MLflow
+
+KFP does not have one generic `mlflow.autolog()` equivalent, and KFP scalar metrics do not provide MLflow's `step=epoch` metric-history interface. Therefore this project logs scalar summaries using native `Metrics` and preserves the complete per-epoch series as a tracked JSON artifact.
+
+Kubeflow Model Registry does not provide the same registered-model alias API used by MLflow (`candidate`, `champion`). The POC records `accepted` and `promoted` metadata instead.
+
+KFP itself also does not provide MLflow's built-in system-metric logging API. The components sample CPU/RSS every five seconds and persist the samples as KFP artifacts.
+
+
+## GitHub credentials for private code and DataLad repositories
+
+Create this Secret in every Kubeflow Profile namespace that runs the pipeline:
+
+```bash
+kubectl create secret generic github-credentials \
+  -n my-profile \
+  --from-literal=username=x-access-token \
+  --from-literal=token="$GITHUB_PAT"
+```
+
+The reusable pipelines expect exactly:
+
+```text
+Secret: github-credentials
+keys:
+  username
+  token
+```
+
+The PAT is not a KFP parameter. KFP injects it only into `resolve_sources`,
+`train_local`, and `evaluate_local`. Those components use a temporary
+`GIT_ASKPASS` script, so the PAT is not embedded in the repository URL or Git
+command line. The same credential environment is used by `git`, `datalad clone`,
+and `datalad get`.
+
+For an organization-managed token, use the narrowest read-only GitHub
+fine-grained PAT that can access the code and DataLad repositories.
+
+## Simplified compilation
+
+Only manifest upload needs a local JSON configuration:
+
+```bash
+python run_pipeline.py manifests --config configs/manifests.example.json
+```
+
+The reusable pipelines need no config file:
+
+```bash
+python run_pipeline.py new
+python run_pipeline.py reproduce
+python run_pipeline.py retrain
+```
+
+Experiment-specific values are KFP run parameters entered/stored with each run.
+
+## DataLad manifest paths and runtime download location
+
+The portable manifests should identify files relative to the root of the
+DataLad dataset whenever possible. Example:
+
+```text
+train/real/image001.png	0
+train/fake/image002.png	1
+```
+
+`configs/manifests.example.json` has `dataset_root`, which is the local DataLad
+checkout used only while preparing the portable manifest bundle. If an input
+manifest contains absolute paths underneath `dataset_root`, the upload helper
+converts them to relative paths automatically.
+
+At runtime, this POC materializes the DataLad repository inside each KFP task:
+
+```text
+resolve_sources Pod: /tmp/data
+train_local Pod:     /tmp/data
+evaluate_local Pod:  /tmp/data
+```
+
+Therefore `train/real/image001.png` becomes
+`/tmp/data/train/real/image001.png` inside a training/evaluation Pod.
+
+These `/tmp/data` directories are Pod-local and are not persistent/shared.
+`train_local` and `evaluate_local` each perform their own `datalad clone` and
+`datalad get` for now. A future `persistent-datasets` PVC can replace this
+without changing the portable manifest format.

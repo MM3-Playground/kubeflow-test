@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
-import os
 import random
 from pathlib import Path
 
-import mlflow
 import numpy as np
 import torch
 from torch import nn
@@ -21,7 +18,7 @@ from pipeline.helpers import write_portable_manifest
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Single-process local CPU/GPU training")
+    parser = argparse.ArgumentParser(description="Single-process local CPU training")
     parser.add_argument("--id", required=True)
     parser.add_argument("--run_name", default="freq")
     parser.add_argument("--seed", type=int, default=3721)
@@ -46,9 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--dataset_root", required=True)
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--experiment", required=True)
-    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
+    parser.add_argument("--device", default="cpu", choices=["cpu"])
     return parser.parse_args()
 
 
@@ -97,176 +92,141 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is unavailable")
+    device = torch.device("cpu")
 
     save_dir = Path(args.save_dir).resolve()
     checkpoint_dir = save_dir / "checkpoints" / f"{args.id}_{args.run_name}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    mlflow.set_workspace(args.workspace)
-    mlflow.set_experiment(args.experiment)
-    run = mlflow.start_run(run_name=f"train-{args.run_name}-{args.id}")
+    model = build_model(args.model, args.image_size, device)
+    if args.load_path:
+        model.load_state_dict(torch.load(args.load_path, map_location=device))
 
-    try:
-        settings_b64 = os.environ.get("PIPELINE_SETTINGS_B64", "")
-        settings_json = base64.b64decode(settings_b64).decode() if settings_b64 else "{}"
-        mlflow.set_tags(
-            {
-                "mlflow.source.git.repoURL": os.environ.get("CODE_REPO", ""),
-                "mlflow.source.git.commit": os.environ.get("CODE_COMMIT", ""),
-                "pipeline.settings_json": settings_json,
-                "pipeline.kind": os.environ.get("PIPELINE_KIND", "new"),
-                "pipeline.execution_backend": "local-process",
-            }
+    optimizer_cls = torch.optim.Adam if args.optim == "adam" else torch.optim.AdamW
+    optimizer = optimizer_cls(model.parameters(), lr=args.lr)
+    scheduler = None
+    if args.val_paths_file and args.patience:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, factor=args.factor, patience=args.patience
         )
-        mlflow.log_params(
-            {
-                "run_id": args.id,
-                "run_name": args.run_name,
-                "seed": args.seed,
-                "model": args.model,
-                "image_size": args.image_size,
-                "batch_size": args.batch_size,
-                "optimizer": args.optim,
-                "learning_rate": args.lr,
-                "epochs": args.n_epochs,
-                "device": str(device),
-                "train_paths_file": args.paths_file,
-                "val_paths_file": args.val_paths_file or "",
-                "load_path": args.load_path or "",
-            }
-        )
-        mlflow.log_artifact(args.paths_file, "datasets")
-        if args.val_paths_file:
-            mlflow.log_artifact(args.val_paths_file, "datasets")
 
-        model = build_model(args.model, args.image_size, device)
-        if args.load_path:
-            model.load_state_dict(torch.load(args.load_path, map_location=device))
+    train_loader = make_loader(args, validation=False)
+    val_loader = make_loader(args, validation=True)
+    if not train_loader or len(train_loader.dataset) == 0:
+        raise RuntimeError("The training dataset is empty")
 
-        optimizer_cls = torch.optim.Adam if args.optim == "adam" else torch.optim.AdamW
-        optimizer = optimizer_cls(model.parameters(), lr=args.lr)
-        scheduler = None
-        if args.val_paths_file and args.patience:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, factor=args.factor, patience=args.patience
-            )
+    criterion = nn.BCEWithLogitsLoss()
+    best_val_loss = float("inf")
+    best_checkpoint: Path | None = None
+    no_improvement = 0
+    history: list[dict] = []
 
-        train_loader = make_loader(args, validation=False)
-        val_loader = make_loader(args, validation=True)
-        if not train_loader or len(train_loader.dataset) == 0:
-            raise RuntimeError("The training dataset is empty")
+    for epoch in range(args.n_epochs):
+        model.train()
+        train_loss_sum = 0.0
+        train_batches = 0
+        for images, labels in train_loader:
+            images = images.to(device)
+            labels = labels.float().unsqueeze(1).to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            train_loss_sum += float(loss.item())
+            train_batches += 1
 
-        criterion = nn.BCEWithLogitsLoss()
-        best_val_loss = float("inf")
-        best_checkpoint: Path | None = None
-        no_improvement = 0
+        train_loss = train_loss_sum / max(train_batches, 1)
+        metrics = {
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        }
 
-        for epoch in range(args.n_epochs):
-            model.train()
-            train_loss_sum = 0.0
-            train_batches = 0
-            for images, labels in train_loader:
-                images = images.to(device)
-                labels = labels.float().unsqueeze(1).to(device)
-                optimizer.zero_grad()
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                train_loss_sum += float(loss.item())
-                train_batches += 1
-
-            train_loss = train_loss_sum / max(train_batches, 1)
-            metrics = {"train_loss": train_loss, "learning_rate": optimizer.param_groups[0]["lr"]}
-
-            improved = val_loader is None
-            if val_loader is not None:
-                model.eval()
-                val_loss_sum = 0.0
-                val_batches = 0
-                with torch.no_grad():
-                    for images, labels in val_loader:
-                        images = images.to(device)
-                        labels = labels.float().unsqueeze(1).to(device)
-                        outputs = model(images)
-                        val_loss_sum += float(criterion(outputs, labels).item())
-                        val_batches += 1
-                val_loss = val_loss_sum / max(val_batches, 1)
-                metrics["val_loss"] = val_loss
-                improved = val_loss <= best_val_loss
-                if improved:
-                    best_val_loss = val_loss
-                    no_improvement = 0
-                else:
-                    no_improvement += 1
-                if scheduler is not None:
-                    scheduler.step(val_loss)
-
-            last_checkpoint = checkpoint_dir / f"{args.id}_last_{epoch}.pth"
-            torch.save(model.state_dict(), last_checkpoint)
+        improved = val_loader is None
+        if val_loader is not None:
+            model.eval()
+            val_loss_sum = 0.0
+            val_batches = 0
+            with torch.no_grad():
+                for images, labels in val_loader:
+                    images = images.to(device)
+                    labels = labels.float().unsqueeze(1).to(device)
+                    outputs = model(images)
+                    val_loss_sum += float(criterion(outputs, labels).item())
+                    val_batches += 1
+            val_loss = val_loss_sum / max(val_batches, 1)
+            metrics["val_loss"] = val_loss
+            improved = val_loss <= best_val_loss
             if improved:
-                best_checkpoint = checkpoint_dir / f"{args.id}_best_{epoch}.pth"
-                torch.save(model.state_dict(), best_checkpoint)
-                mlflow.log_artifact(str(best_checkpoint), "best_models")
+                best_val_loss = val_loss
+                no_improvement = 0
+            else:
+                no_improvement += 1
+            if scheduler is not None:
+                scheduler.step(val_loss)
 
-            mlflow.log_metrics(metrics, step=epoch)
-            print(f"Epoch {epoch}: {metrics}")
-            if val_loader is not None and no_improvement > args.n_early:
-                print("Early stopping")
-                break
+        last_checkpoint = checkpoint_dir / f"{args.id}_last_{epoch}.pth"
+        torch.save(model.state_dict(), last_checkpoint)
+        if improved:
+            best_checkpoint = checkpoint_dir / f"{args.id}_best_{epoch}.pth"
+            torch.save(model.state_dict(), best_checkpoint)
 
-        selected_checkpoint = best_checkpoint or last_checkpoint
-        model.load_state_dict(torch.load(selected_checkpoint, map_location=device))
-        model_info = mlflow.pytorch.log_model(
-            model,
-            name="model",
-            serialization_format="pickle",
-            code_paths=[str(Path.cwd())],
-        )
+        history.append(metrics)
+        print(f"Epoch {epoch}: {metrics}")
+        if val_loader is not None and no_improvement > args.n_early:
+            print("Early stopping")
+            break
 
-        portable_dir = save_dir / "portable-manifests" / args.id
-        portable_train = write_portable_manifest(
-            Path(args.paths_file).resolve().parent / f"cond_paths_file_{args.id}_train.txt",
-            portable_dir / f"cond_paths_file_{args.id}_train.txt",
+    selected_checkpoint = best_checkpoint or last_checkpoint
+
+    history_path = save_dir / "training-history.json"
+    history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    portable_dir = save_dir / "portable-manifests" / args.id
+    portable_train = write_portable_manifest(
+        Path(args.paths_file).resolve().parent / f"cond_paths_file_{args.id}_train.txt",
+        portable_dir / f"cond_paths_file_{args.id}_train.txt",
+        args.dataset_root,
+    )
+    portable_val = None
+    if args.val_paths_file:
+        portable_val = write_portable_manifest(
+            Path(args.val_paths_file).resolve().parent / f"cond_paths_file_{args.id}_val.txt",
+            portable_dir / f"cond_paths_file_{args.id}_val.txt",
             args.dataset_root,
         )
-        mlflow.log_artifact(str(portable_train), "datasets/portable")
-        portable_val = None
-        if args.val_paths_file:
-            portable_val = write_portable_manifest(
-                Path(args.val_paths_file).resolve().parent / f"cond_paths_file_{args.id}_val.txt",
-                portable_dir / f"cond_paths_file_{args.id}_val.txt",
-                args.dataset_root,
-            )
-            mlflow.log_artifact(str(portable_val), "datasets/portable")
-        for source, name in [(args.paths_file, "train_datalad.txt"),
-                             (args.val_paths_file, "val_datalad.txt"),
-                             (args.test_paths_file, "test_datalad.txt")]:
-            if source:
-                portable_original = write_portable_manifest(source, portable_dir / name, args.dataset_root)
-                mlflow.log_artifact(str(portable_original), "datasets/portable")
+    for source, name in [
+        (args.paths_file, "train_datalad.txt"),
+        (args.val_paths_file, "val_datalad.txt"),
+        (args.test_paths_file, "test_datalad.txt"),
+    ]:
+        if source:
+            write_portable_manifest(source, portable_dir / name, args.dataset_root)
 
-        result_dir = save_dir / "pipeline-results"
-        result_dir.mkdir(parents=True, exist_ok=True)
-        result = {
-            "execution_id": args.id,
-            "mlflow_run_id": run.info.run_id,
-            "best_checkpoint": str(selected_checkpoint.resolve()),
-            "model_uri": model_info.model_uri,
-            "train_conditioned_paths_file": str(Path(args.paths_file).resolve().parent / f"cond_paths_file_{args.id}_train.txt"),
-            "val_conditioned_paths_file": str(Path(args.val_paths_file).resolve().parent / f"cond_paths_file_{args.id}_val.txt") if args.val_paths_file else None,
-        }
-        result_path = result_dir / f"train-{args.id}.json"
-        result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-        mlflow.log_artifact(str(result_path), "pipeline")
-    finally:
-        mlflow.end_run()
+    final = history[-1]
+    result_dir = save_dir / "pipeline-results"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    result = {
+        "execution_id": args.id,
+        "best_checkpoint": str(selected_checkpoint.resolve()),
+        "checkpoint_dir": str(checkpoint_dir.resolve()),
+        "training_history": str(history_path.resolve()),
+        "portable_manifest_dir": str(portable_dir.resolve()),
+        "train_conditioned_paths_file": str(
+            Path(args.paths_file).resolve().parent / f"cond_paths_file_{args.id}_train.txt"
+        ),
+        "val_conditioned_paths_file": str(
+            Path(args.val_paths_file).resolve().parent / f"cond_paths_file_{args.id}_val.txt"
+        ) if args.val_paths_file else None,
+        "final_train_loss": float(final["train_loss"]),
+        "final_learning_rate": float(final["learning_rate"]),
+        "best_val_loss": None if best_val_loss == float("inf") else float(best_val_loss),
+        "epochs_completed": len(history),
+    }
+    (result_dir / f"train-{args.id}.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":

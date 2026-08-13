@@ -1,5 +1,0 @@
-# Demo installation is driven by pyproject.toml.
-# From the mounted repository, the Compose worker runs:
-#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-#   pip install -e /opt/pipeline
--e .

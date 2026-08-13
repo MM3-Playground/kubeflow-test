@@ -23,11 +23,11 @@ class Attributor(nn.Module):
         )
 
         self.last = nn.Linear(in_features=image_size * image_size * 2, out_features=1) # 128 * 128 * 32
-            
+
     def forward(self, x):
         masked = self.mask(x) * x
         return self.last(self.m(masked))
-    
+
     def get_mask(self, x):
         return (self.mask(x) + 1.0) / 2.0
 

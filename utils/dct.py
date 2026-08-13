@@ -9,7 +9,7 @@ try:
 
     def dct1_rfft_impl(x):
         return torch.view_as_real(torch.fft.rfft(x, dim=1))
-    
+
     def dct_fft_impl(v):
         return torch.view_as_real(torch.fft.fft(v, dim=1))
 
@@ -19,7 +19,7 @@ except ImportError:
     # PyTorch 1.6.0 and older versions
     def dct1_rfft_impl(x):
         return torch.rfft(x, 1)
-    
+
     def dct_fft_impl(v):
         return torch.rfft(v, 1, onesided=False)
 

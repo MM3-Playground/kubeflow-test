@@ -1,12 +1,8 @@
-
 import random
 from pathlib import Path
 import cv2
-import pandas as pd
 
 from torch.utils.data import Dataset
-
-import mlflow
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -43,12 +39,12 @@ class AnimeDataset(Dataset):
             for p in picked:
                 self.input_image_paths.append(p)
                 self.labels.append(label)
-        
+
         return
 
     def __init__(self, global_rank, iut_paths_file, image_size, id, dct, n_c_samples = None, val = False, repo = None, commit = None, name = None):
         self.n_c_samples = n_c_samples
-        
+
         self.val = val
 
         self.input_image_paths = []
@@ -96,28 +92,6 @@ class AnimeDataset(Dataset):
                     self.input_image_paths.append(parts[0])
                     self.labels.append(int(parts[1]))
 
-        # save to mlflow
-        if global_rank == 0:
-            mlflow.log_artifact(self.save_path if Path(self.save_path).exists() else iut_paths_file, "datasets")
-            
-            dataframe = pd.DataFrame({
-                "input_image_paths": self.input_image_paths,
-                "labels": self.labels
-            })
-            dataset = mlflow.data.from_pandas(
-                dataframe,
-                source=repo,
-                digest=commit[:36],
-                name=name + ("-train" if not val else "-val")
-            )
-            mlflow.log_input(dataset, "train" if not val else "val")
-
-            mlflow.log_params({
-                "repo": repo,
-                "commit": commit,
-                "name": name
-            })
-
         # ----------
         #  TODO: Transforms for data augmentation (more augmentations should be added)
         # ----------
@@ -129,7 +103,7 @@ class AnimeDataset(Dataset):
                 A.VerticalFlip(),
                 ToTensorV2()
             ])
-            
+
             self.transform_val = A.Compose([
                 A.Normalize(mean=0.0, std=1.0),
                 #A.Resize(image_size, image_size),
@@ -144,7 +118,7 @@ class AnimeDataset(Dataset):
                 ToTensorV2(),
                 DCT(p = 1.0, log=True, factor=1)
             ])
-            
+
             self.transform_val = A.Compose([
                 A.Normalize(mean=0.0, std=1.0),
                 #A.Resize(image_size, image_size),
@@ -162,7 +136,7 @@ class AnimeDataset(Dataset):
         except:
             print('Failed to load image {}'.format(input_file_name))
             return None
-        
+
         if (iut is None):
             print('Failed to load image {}'.format(input_file_name))
             return None

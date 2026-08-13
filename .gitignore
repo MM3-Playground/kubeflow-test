@@ -15,35 +15,25 @@ checkpoints/
 logs/
 evaluations/
 pipeline-results/
+portable-manifests/
 reproduction-manifests/
-mlruns/
 *.pth
 *.pt
 *.ckpt
 
-# Local configuration and secrets
+# Local configuration / manifests / secrets
 configs/*.local.json
-!.gitkeep
+*_datalad.txt
+.env.*
+!.env.example
+*.token
 
 # Local clones and downloaded datasets
 work/
 data/
 runs/
-
-# Local credentials and environment files
-.env
-.env.*
-!.env.example
-*.token
-
-worker.env
 .manifest-upload/
-uv-cache/
 
-# Generic worker/demo configuration
-.env
-prefect-workspace/
-
-# Prefect
-generate_prefect_yaml.py
-prefect.yaml
+# Kubeflow compilation outputs
+compiled/*.yaml
+compiled/*.json

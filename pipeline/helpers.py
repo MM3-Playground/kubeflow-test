@@ -121,93 +121,52 @@ def datalad_clone_or_update(
     with git_https_auth_env(username, token) as auth_env:
         if not dataset_path.exists():
             dataset_path.parent.mkdir(parents=True, exist_ok=True)
-
             run(["datalad", "clone", repo, str(dataset_path)], env=auth_env)
         elif not (dataset_path / ".git").exists():
             raise RuntimeError(
                 f"Dataset path already exists but is not a Git/DataLad "
                 f"repository: {dataset_path}"
             )
-
         if commit:
             run(["git", "checkout", "--detach", commit], cwd=str(dataset_path), env=auth_env)
-
-        # Materialize all annexed content recursively.
         run(["datalad", "get", "-r", "."], cwd=str(dataset_path), env=auth_env)
-
         resolved_commit = run(["git", "rev-parse", "HEAD"], cwd=str(dataset_path), env=auth_env)
         dataset_id = run(["datalad", "configuration", "get", "-d", str(dataset_path), "datalad.dataset.id"], env=auth_env)
-
         remote_url = run(["git", "remote", "get-url", "origin"], cwd=str(dataset_path), env=auth_env)
-
-    return {
-        "repo": remote_url,
-        "path": str(dataset_path),
-        "commit": resolved_commit,
-        "name": dataset_path.name,
-        "dataset_id": dataset_id,
-    }
+    return {"repo": remote_url, "path": str(dataset_path), "commit": resolved_commit, "name": dataset_path.name, "dataset_id": dataset_id}
 
 
 def load_json(path: str | Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
-
 def save_json(path: str | Path, value: dict) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(value, indent=2), encoding="utf-8")
-
+    target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); target.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 def read_manifest(path: str | Path) -> list[tuple[str, int]]:
-    rows: list[tuple[str, int]] = []
-    for line_number, raw in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
-        if not raw.strip():
-            continue
-        parts = raw.rstrip().split("\t")
-        if len(parts) != 2:
-            raise ValueError(f"Invalid manifest line {line_number} in {path}: expected PATH<TAB>LABEL")
-        rows.append((parts[0], int(parts[1])))
-    if not rows:
-        raise ValueError(f"Manifest is empty: {path}")
+    rows=[]
+    for line_number, raw in enumerate(Path(path).read_text(encoding="utf-8").splitlines(),1):
+        if not raw.strip(): continue
+        parts=raw.rstrip().split("\t")
+        if len(parts)!=2: raise ValueError(f"Invalid manifest line {line_number} in {path}: expected PATH<TAB>LABEL")
+        rows.append((parts[0],int(parts[1])))
+    if not rows: raise ValueError(f"Manifest is empty: {path}")
     return rows
 
-
-def write_portable_manifest(
-    source: str | Path,
-    destination: str | Path,
-    dataset_root: str | Path,
-) -> Path:
-    """Store paths relative to the dataset root when possible."""
-    root = Path(dataset_root).expanduser().resolve()
-    target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
-        for raw_path, label in read_manifest(source):
-            candidate = Path(raw_path).expanduser()
+def write_portable_manifest(source: str | Path, destination: str | Path, dataset_root: str | Path) -> Path:
+    root=Path(dataset_root).expanduser().resolve(); target=Path(destination); target.parent.mkdir(parents=True,exist_ok=True)
+    with target.open("w",encoding="utf-8") as handle:
+        for raw_path,label in read_manifest(source):
+            candidate=Path(raw_path).expanduser()
             if candidate.is_absolute():
-                try:
-                    rendered = candidate.resolve().relative_to(root).as_posix()
-                except ValueError:
-                    rendered = str(candidate)
-            else:
-                rendered = candidate.as_posix()
+                try: rendered=candidate.resolve().relative_to(root).as_posix()
+                except ValueError: rendered=str(candidate)
+            else: rendered=candidate.as_posix()
             handle.write(f"{rendered}\t{label}\n")
     return target.resolve()
 
-
-def materialize_manifest(
-    source: str | Path,
-    destination: str | Path,
-    dataset_root: str | Path,
-) -> Path:
-    """Convert portable/relative paths into absolute paths for the current dataset checkout."""
-    root = Path(dataset_root).expanduser().resolve()
-    target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
-        for raw_path, label in read_manifest(source):
-            candidate = Path(raw_path).expanduser()
-            resolved = candidate if candidate.is_absolute() else root / candidate
-            handle.write(f"{resolved.resolve()}\t{label}\n")
+def materialize_manifest(source: str | Path, destination: str | Path, dataset_root: str | Path) -> Path:
+    root=Path(dataset_root).expanduser().resolve(); target=Path(destination); target.parent.mkdir(parents=True,exist_ok=True)
+    with target.open("w",encoding="utf-8") as handle:
+        for raw_path,label in read_manifest(source):
+            candidate=Path(raw_path).expanduser(); resolved=candidate if candidate.is_absolute() else root/candidate; handle.write(f"{resolved.resolve()}\t{label}\n")
     return target.resolve()
