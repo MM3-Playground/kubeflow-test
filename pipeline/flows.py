@@ -67,149 +67,15 @@ def upload_manifest_bundle_pipeline(
     )
 
 
-@dsl.component(base_image=RUNTIME_IMAGE)
-def resolve_sources(
-    code_repo_url: str,
-    dataset_repo_url: str,
-    code_commit: str,
-    dataset_commit: str,
-    code_source: Output[Artifact],
-    dataset: Output[Dataset],
-) -> NamedTuple(
-    "Outputs",
-    [
-        ("code_commit", str),
-        ("dataset_commit", str),
-        ("dataset_id", str),
-        ("dataset_name", str),
-    ],
-):
-    import json
-    import os
-    import stat
-    import subprocess
-    import sys
-    import tempfile
-    from pathlib import Path
-
-    def git_auth_env():
-        env = os.environ.copy()
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        token = env.get("GITHUB_TOKEN", "")
-        if not token:
-            return env, None
-
-        handle = tempfile.NamedTemporaryFile(
-            "w", delete=False, prefix="git-askpass-"
-        )
-        handle.write(
-            "#!/bin/sh\n"
-            "case \"$1\" in\n"
-            "  *sername*) printf '%s\\n' \"$GITHUB_USERNAME\" ;;\n"
-            "  *)         printf '%s\\n' \"$GITHUB_TOKEN\" ;;\n"
-            "esac\n"
-        )
-        handle.close()
-        os.chmod(
-            handle.name,
-            stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR,
-        )
-        env["GIT_ASKPASS"] = handle.name
-        return env, handle.name
-
-    auth_env, askpass_path = git_auth_env()
-
-    def run(command, cwd=None):
-        return subprocess.check_output(
-            command, cwd=cwd, env=auth_env, text=True
-        ).strip()
-
-    code_path = Path("/tmp/code")
-    data_path = Path("/tmp/data")
-
-    subprocess.run(
-        ["git", "config", "--global", "user.name", "Kubeflow Pipeline"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "--global", "user.email", "kubeflow@localhost"],
-        check=True,
-    )
-
-    subprocess.run(["git", "clone", code_repo_url, str(code_path)], env=auth_env, check=True)
-    resolved_code_commit = code_commit or run(["git", "rev-parse", "HEAD"], code_path)
-    subprocess.run(
-        ["git", "checkout", "--detach", resolved_code_commit],
-        cwd=code_path,
-        env=auth_env,
-        check=True,
-    )
-    resolved_code_commit = run(["git", "rev-parse", "HEAD"], code_path)
-
-    subprocess.run(["datalad", "clone", dataset_repo_url, str(data_path)], env=auth_env, check=True)
-    resolved_dataset_commit = dataset_commit or run(["git", "rev-parse", "HEAD"], data_path)
-    subprocess.run(
-        ["git", "checkout", "--detach", resolved_dataset_commit],
-        cwd=data_path,
-        env=auth_env,
-        check=True,
-    )
-    resolved_dataset_commit = run(["git", "rev-parse", "HEAD"], data_path)
-    dataset_id = run(
-        [
-            "datalad",
-            "configuration",
-            "-d",
-            str(data_path),
-            "get",
-            "datalad.dataset.id",
-        ]
-    )
-    dataset_name = data_path.name
-
-    code_record = {
-        "repo": code_repo_url,
-        "commit": resolved_code_commit,
-    }
-    dataset_record = {
-        "repo": dataset_repo_url,
-        "commit": resolved_dataset_commit,
-        "dataset_id": dataset_id,
-        "name": dataset_name,
-    }
-
-    Path(code_source.path).parent.mkdir(parents=True, exist_ok=True)
-    Path(code_source.path).write_text(json.dumps(code_record, indent=2), encoding="utf-8")
-    code_source.metadata["repo"] = code_repo_url
-    code_source.metadata["commit"] = resolved_code_commit
-    code_source.metadata["kind"] = "git-source"
-
-    Path(dataset.path).parent.mkdir(parents=True, exist_ok=True)
-    Path(dataset.path).write_text(json.dumps(dataset_record, indent=2), encoding="utf-8")
-    dataset.metadata["repo"] = dataset_repo_url
-    dataset.metadata["commit"] = resolved_dataset_commit
-    dataset.metadata["dataset_id"] = dataset_id
-    dataset.metadata["name"] = dataset_name
-    dataset.metadata["versioning"] = "DataLad/git-annex"
-
-    if askpass_path:
-        Path(askpass_path).unlink(missing_ok=True)
-
-    return (
-        resolved_code_commit,
-        resolved_dataset_commit,
-        dataset_id,
-        dataset_name,
-    )
-
-
 @dsl.component(
     base_image=RUNTIME_IMAGE,
     packages_to_install=["psutil>=5.9,<8"],
 )
 def train_local(
-    code_source: Input[Artifact],
-    dataset: Input[Dataset],
+    code_repo_url: str,
+    dataset_repo_url: str,
+    code_commit: str,
+    dataset_commit: str,
     manifest_bundle: Input[Dataset],
     pipeline_kind: str,
     run_name: str,
@@ -227,6 +93,8 @@ def train_local(
     n_c_samples: int,
     val_n_c_samples: int,
     load_model_uri: str,
+    code_source: Output[Artifact],
+    dataset: Output[Dataset],
     trained_model: Output[Model],
     checkpoints: Output[Artifact],
     train_dataset: Output[Dataset],
@@ -286,16 +154,91 @@ def train_local(
             check=True,
         )
 
-    code_info = json.loads(Path(code_source.path).read_text(encoding="utf-8"))
-    dataset_info = json.loads(Path(dataset.path).read_text(encoding="utf-8"))
+    def run(command, cwd=None, use_git_auth=False):
+        return subprocess.check_output(
+            command,
+            cwd=cwd,
+            env=auth_env if use_git_auth else None,
+            text=True,
+        ).strip()
 
     code = Path("/tmp/code")
     data = Path("/tmp/data")
-    cmd(["git", "clone", code_info["repo"], str(code)], use_git_auth=True)
-    cmd(["git", "checkout", "--detach", code_info["commit"]], code, use_git_auth=True)
-    cmd(["datalad", "clone", dataset_info["repo"], str(data)], use_git_auth=True)
-    cmd(["git", "checkout", "--detach", dataset_info["commit"]], data, use_git_auth=True)
+
+    # DataLad/git-annex may create local Git commits while initializing a clone.
+    # Each KFP task runs in a fresh Pod, so configure an identity in this Pod.
+    cmd(["git", "config", "--global", "user.name", "Kubeflow Pipeline"])
+    cmd(["git", "config", "--global", "user.email", "kubeflow@localhost"])
+
+    cmd(["git", "clone", code_repo_url, str(code)], use_git_auth=True)
+    resolved_code_commit = code_commit or run(
+        ["git", "rev-parse", "HEAD"], code, use_git_auth=True
+    )
+    cmd(
+        ["git", "checkout", "--detach", resolved_code_commit],
+        code,
+        use_git_auth=True,
+    )
+    resolved_code_commit = run(
+        ["git", "rev-parse", "HEAD"], code, use_git_auth=True
+    )
+
+    cmd(["datalad", "clone", dataset_repo_url, str(data)], use_git_auth=True)
+    resolved_dataset_commit = dataset_commit or run(
+        ["git", "rev-parse", "HEAD"], data, use_git_auth=True
+    )
+    cmd(
+        ["git", "checkout", "--detach", resolved_dataset_commit],
+        data,
+        use_git_auth=True,
+    )
+    resolved_dataset_commit = run(
+        ["git", "rev-parse", "HEAD"], data, use_git_auth=True
+    )
+    dataset_id = run(
+        [
+            "datalad",
+            "configuration",
+            "-d",
+            str(data),
+            "get",
+            "datalad.dataset.id",
+        ]
+    )
+    dataset_name = data.name
+
+    code_info = {
+        "repo": code_repo_url,
+        "commit": resolved_code_commit,
+    }
+    dataset_info = {
+        "repo": dataset_repo_url,
+        "commit": resolved_dataset_commit,
+        "dataset_id": dataset_id,
+        "name": dataset_name,
+    }
+
+    # These are first-class KFP provenance artifacts produced by the training task.
+    Path(code_source.path).parent.mkdir(parents=True, exist_ok=True)
+    Path(code_source.path).write_text(
+        json.dumps(code_info, indent=2), encoding="utf-8"
+    )
+    code_source.metadata["repo"] = code_repo_url
+    code_source.metadata["commit"] = resolved_code_commit
+    code_source.metadata["kind"] = "git-source"
+
+    Path(dataset.path).parent.mkdir(parents=True, exist_ok=True)
+    Path(dataset.path).write_text(
+        json.dumps(dataset_info, indent=2), encoding="utf-8"
+    )
+    dataset.metadata["repo"] = dataset_repo_url
+    dataset.metadata["commit"] = resolved_dataset_commit
+    dataset.metadata["dataset_id"] = dataset_id
+    dataset.metadata["name"] = dataset_name
+    dataset.metadata["versioning"] = "DataLad/git-annex"
+
     cmd(["datalad", "get", "-r", "."], data, use_git_auth=True)
+
     venv = Path("/tmp/venv")
     cmd([sys.executable, "-m", "venv", str(venv)])
     runtime_python = str(venv / "bin" / "python")
@@ -608,6 +551,11 @@ def evaluate_local(
 
     code = Path("/tmp/code")
     data = Path("/tmp/data")
+
+    # Fresh Pod: configure Git identity again for DataLad/git-annex initialization.
+    cmd(["git", "config", "--global", "user.name", "Kubeflow Pipeline"])
+    cmd(["git", "config", "--global", "user.email", "kubeflow@localhost"])
+
     cmd(["git", "clone", code_info["repo"], str(code)], use_git_auth=True)
     cmd(["git", "checkout", "--detach", code_info["commit"]], code, use_git_auth=True)
     cmd(["datalad", "clone", dataset_info["repo"], str(data)], use_git_auth=True)
@@ -888,14 +836,6 @@ def _workflow(
     registry_address: str,
     registry_port: int,
 ):
-    sources = resolve_sources(
-        code_repo_url=code_repo_url,
-        dataset_repo_url=dataset_repo_url,
-        code_commit=code_commit,
-        dataset_commit=dataset_commit,
-    )
-    _configure_runtime_task(sources)
-
     manifests = dsl.importer(
         artifact_uri=manifest_bundle_uri,
         artifact_class=Dataset,
@@ -903,8 +843,10 @@ def _workflow(
     )
 
     train = train_local(
-        code_source=sources.outputs["code_source"],
-        dataset=sources.outputs["dataset"],
+        code_repo_url=code_repo_url,
+        dataset_repo_url=dataset_repo_url,
+        code_commit=code_commit,
+        dataset_commit=dataset_commit,
         manifest_bundle=manifests.output,
         pipeline_kind=pipeline_kind,
         run_name=run_name,
@@ -926,8 +868,8 @@ def _workflow(
     _configure_runtime_task(train)
 
     evaluate = evaluate_local(
-        code_source=sources.outputs["code_source"],
-        dataset=sources.outputs["dataset"],
+        code_source=train.outputs["code_source"],
+        dataset=train.outputs["dataset"],
         manifest_bundle=manifests.output,
         trained_model=train.outputs["trained_model"],
         pipeline_kind=pipeline_kind,
@@ -937,8 +879,8 @@ def _workflow(
     _configure_runtime_task(evaluate)
 
     register_model(
-        code_source=sources.outputs["code_source"],
-        dataset=sources.outputs["dataset"],
+        code_source=train.outputs["code_source"],
+        dataset=train.outputs["dataset"],
         trained_model=train.outputs["trained_model"],
         training_metadata=train.outputs["training_metadata"],
         evaluation_metadata=evaluate.outputs["evaluation_metadata"],
