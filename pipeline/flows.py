@@ -102,7 +102,8 @@ def train_local(
     training_metrics: Output[Metrics],
     training_history: Output[Artifact],
     training_metadata: Output[Artifact],
-    system_metrics: Output[Artifact],
+    system_metrics: Output[Metrics],
+    system_metrics_history: Output[Artifact],
 ):
     import csv
     import hashlib
@@ -421,10 +422,13 @@ def train_local(
     training_metrics.log_metric("final_train_loss", result["final_train_loss"])
     training_metrics.log_metric("final_learning_rate", result["final_learning_rate"])
     training_metrics.log_metric("epochs_completed", result["epochs_completed"])
+    training_metrics.log_metric("train_samples", train_info["rows"])
+    if val_manifest.exists():
+        training_metrics.log_metric("val_samples", val_info["rows"])
     if result["best_val_loss"] is not None:
         training_metrics.log_metric("best_val_loss", result["best_val_loss"])
 
-    system_path = Path(system_metrics.path)
+    system_path = Path(system_metrics_history.path)
     system_path.parent.mkdir(parents=True, exist_ok=True)
     with system_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -433,6 +437,18 @@ def train_local(
         )
         writer.writeheader()
         writer.writerows(samples)
+
+    if samples:
+        cpu_values = [float(sample["cpu_percent"]) for sample in samples]
+        rss_values = [float(sample["rss_bytes"]) for sample in samples]
+        system_metrics.log_metric("avg_cpu_percent", sum(cpu_values) / len(cpu_values))
+        system_metrics.log_metric("max_cpu_percent", max(cpu_values))
+        system_metrics.log_metric(
+            "avg_rss_mb",
+            (sum(rss_values) / len(rss_values)) / (1024 * 1024),
+        )
+        system_metrics.log_metric("peak_rss_mb", max(rss_values) / (1024 * 1024))
+        system_metrics.log_metric("samples", len(samples))
 
     metadata = {
         "execution_id": execution_id,
@@ -467,8 +483,8 @@ def train_local(
             trained_model.metadata[key] = value
     checkpoints.metadata["kind"] = "all-training-checkpoints"
     training_history.metadata["kind"] = "per-epoch-metric-history"
-    system_metrics.metadata["kind"] = "system-metric-history"
-    system_metrics.metadata["sampling_interval_seconds"] = 5
+    system_metrics_history.metadata["kind"] = "system-metric-history"
+    system_metrics_history.metadata["sampling_interval_seconds"] = 5
     if askpass_path:
         Path(askpass_path).unlink(missing_ok=True)
 
@@ -490,7 +506,8 @@ def evaluate_local(
     classification_metrics: Output[ClassificationMetrics],
     evaluation_results: Output[Artifact],
     evaluation_metadata: Output[Artifact],
-    system_metrics: Output[Artifact],
+    system_metrics: Output[Metrics],
+    system_metrics_history: Output[Artifact],
 ) -> NamedTuple(
     "Outputs",
     [("accuracy", float)],
@@ -656,11 +673,25 @@ def evaluate_local(
                 y_pred.append(int(row["Pred"]))
                 y_true.append(int(row["True"]))
     if y_true:
+        from sklearn.metrics import precision_score, recall_score, f1_score
+
         labels = sorted(set(y_true) | set(y_pred))
         matrix = confusion_matrix(y_true, y_pred, labels=labels).tolist()
         classification_metrics.log_confusion_matrix(
             [str(label) for label in labels],
             matrix,
+        )
+        evaluation_metrics.log_metric(
+            "precision",
+            float(precision_score(y_true, y_pred, zero_division=0)),
+        )
+        evaluation_metrics.log_metric(
+            "recall",
+            float(recall_score(y_true, y_pred, zero_division=0)),
+        )
+        evaluation_metrics.log_metric(
+            "f1",
+            float(f1_score(y_true, y_pred, zero_division=0)),
         )
 
     portable_test = out / "test_datalad.txt"
@@ -673,9 +704,11 @@ def evaluate_local(
     test_dataset.metadata["dataset_id"] = dataset_info["dataset_id"]
     test_dataset.metadata["name"] = dataset_info["name"] + "-test"
     test_dataset.metadata["manifest_sha256"] = hashlib.sha256(test_bytes).hexdigest()
-    test_dataset.metadata["samples"] = len(
+    test_samples = len(
         [x for x in test_bytes.decode("utf-8").splitlines() if x.strip()]
     )
+    test_dataset.metadata["samples"] = test_samples
+    evaluation_metrics.log_metric("test_samples", test_samples)
 
     archive = shutil.make_archive("/tmp/evaluation-results", "gztar", root_dir=out)
     Path(evaluation_results.path).parent.mkdir(parents=True, exist_ok=True)
@@ -683,7 +716,7 @@ def evaluate_local(
     evaluation_results.metadata["kind"] = "evaluation-results"
     evaluation_results.metadata["contains"] = "pred.csv, confusion matrix PNG, result JSON, portable test manifest"
 
-    system_path = Path(system_metrics.path)
+    system_path = Path(system_metrics_history.path)
     system_path.parent.mkdir(parents=True, exist_ok=True)
     with system_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -692,8 +725,21 @@ def evaluate_local(
         )
         writer.writeheader()
         writer.writerows(samples)
-    system_metrics.metadata["kind"] = "system-metric-history"
-    system_metrics.metadata["sampling_interval_seconds"] = 5
+
+    if samples:
+        cpu_values = [float(sample["cpu_percent"]) for sample in samples]
+        rss_values = [float(sample["rss_bytes"]) for sample in samples]
+        system_metrics.log_metric("avg_cpu_percent", sum(cpu_values) / len(cpu_values))
+        system_metrics.log_metric("max_cpu_percent", max(cpu_values))
+        system_metrics.log_metric(
+            "avg_rss_mb",
+            (sum(rss_values) / len(rss_values)) / (1024 * 1024),
+        )
+        system_metrics.log_metric("peak_rss_mb", max(rss_values) / (1024 * 1024))
+        system_metrics.log_metric("samples", len(samples))
+
+    system_metrics_history.metadata["kind"] = "system-metric-history"
+    system_metrics_history.metadata["sampling_interval_seconds"] = 5
 
     metadata = {
         "execution_id": execution_id,
@@ -718,7 +764,7 @@ def evaluate_local(
 
 @dsl.component(
     base_image="python:3.11-slim",
-    packages_to_install=["model-registry>=0.3.14,<0.4"],
+    packages_to_install=["model-registry==0.3.12"],
 )
 def register_model(
     code_source: Input[Artifact],
@@ -918,7 +964,7 @@ def new_training_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor",
     promote_on_pass: bool = True,
-    registry_address: str = "http://model-registry-service",
+    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
     registry_port: int = 8080,
 ):
     _workflow(
@@ -976,7 +1022,7 @@ def reproduce_training_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor-reproduction",
     promote_on_pass: bool = False,
-    registry_address: str = "http://model-registry-service",
+    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
     registry_port: int = 8080,
 ):
     _workflow(
@@ -1034,7 +1080,7 @@ def retrain_pipeline(
     minimum_accuracy: float = 0.0,
     registered_model_name: str = "anime-attributor",
     promote_on_pass: bool = True,
-    registry_address: str = "http://model-registry-service",
+    registry_address: str = "http://model-registry-service.kubeflow.svc.cluster.local",
     registry_port: int = 8080,
 ):
     _workflow(

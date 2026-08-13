@@ -124,8 +124,7 @@ def datalad_clone_or_update(
             run(["datalad", "clone", repo, str(dataset_path)], env=auth_env)
         elif not (dataset_path / ".git").exists():
             raise RuntimeError(
-                f"Dataset path already exists but is not a Git/DataLad "
-                f"repository: {dataset_path}"
+                f"Dataset path already exists but is not a Git/DataLad repository: {dataset_path}"
             )
         if commit:
             run(["git", "checkout", "--detach", commit], cwd=str(dataset_path), env=auth_env)
@@ -138,10 +137,8 @@ def datalad_clone_or_update(
 
 def load_json(path: str | Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
-
 def save_json(path: str | Path, value: dict) -> None:
     target = Path(path); target.parent.mkdir(parents=True, exist_ok=True); target.write_text(json.dumps(value, indent=2), encoding="utf-8")
-
 def read_manifest(path: str | Path) -> list[tuple[str, int]]:
     rows=[]
     for line_number, raw in enumerate(Path(path).read_text(encoding="utf-8").splitlines(),1):
@@ -151,7 +148,6 @@ def read_manifest(path: str | Path) -> list[tuple[str, int]]:
         rows.append((parts[0],int(parts[1])))
     if not rows: raise ValueError(f"Manifest is empty: {path}")
     return rows
-
 def write_portable_manifest(source: str | Path, destination: str | Path, dataset_root: str | Path) -> Path:
     root=Path(dataset_root).expanduser().resolve(); target=Path(destination); target.parent.mkdir(parents=True,exist_ok=True)
     with target.open("w",encoding="utf-8") as handle:
@@ -163,7 +159,6 @@ def write_portable_manifest(source: str | Path, destination: str | Path, dataset
             else: rendered=candidate.as_posix()
             handle.write(f"{rendered}\t{label}\n")
     return target.resolve()
-
 def materialize_manifest(source: str | Path, destination: str | Path, dataset_root: str | Path) -> Path:
     root=Path(dataset_root).expanduser().resolve(); target=Path(destination); target.parent.mkdir(parents=True,exist_ok=True)
     with target.open("w",encoding="utf-8") as handle:
