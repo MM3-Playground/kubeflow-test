@@ -127,6 +127,15 @@ def resolve_sources(
     code_path = Path("/tmp/code")
     data_path = Path("/tmp/data")
 
+    subprocess.run(
+        ["git", "config", "--global", "user.name", "Kubeflow Pipeline"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "--global", "user.email", "kubeflow@localhost"],
+        check=True,
+    )
+
     subprocess.run(["git", "clone", code_repo_url, str(code_path)], env=auth_env, check=True)
     resolved_code_commit = code_commit or run(["git", "rev-parse", "HEAD"], code_path)
     subprocess.run(
