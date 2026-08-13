@@ -1,4 +1,5 @@
 from typing import NamedTuple
+import os
 
 from kfp import dsl, kubernetes
 from kfp.dsl import (
@@ -10,6 +11,11 @@ from kfp.dsl import (
     Model,
     Output,
 )
+
+RUNTIME_IMAGE = "registry.rcg.sfu.ca/hallo/hallo-data-portal/kubeflow:test"
+IMAGE_PULL_SECRET = "regcred"
+
+
 
 @dsl.component(base_image="python:3.11-slim")
 def write_manifest_bundle(
@@ -61,7 +67,7 @@ def upload_manifest_bundle_pipeline(
     )
 
 
-@dsl.component(base_image="python:3.11-slim")
+@dsl.component(base_image=RUNTIME_IMAGE)
 def resolve_sources(
     code_repo_url: str,
     dataset_repo_url: str,
@@ -117,13 +123,6 @@ def resolve_sources(
         return subprocess.check_output(
             command, cwd=cwd, env=auth_env, text=True
         ).strip()
-
-    subprocess.run(["apt-get", "update"], check=True)
-    subprocess.run(["apt-get", "install", "-y", "git", "git-annex"], check=True)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "datalad>=1.1,<2"],
-        check=True,
-    )
 
     code_path = Path("/tmp/code")
     data_path = Path("/tmp/data")
@@ -196,7 +195,7 @@ def resolve_sources(
 
 
 @dsl.component(
-    base_image="python:3.11-slim",
+    base_image=RUNTIME_IMAGE,
     packages_to_install=["psutil>=5.9,<8"],
 )
 def train_local(
@@ -281,10 +280,6 @@ def train_local(
     code_info = json.loads(Path(code_source.path).read_text(encoding="utf-8"))
     dataset_info = json.loads(Path(dataset.path).read_text(encoding="utf-8"))
 
-    cmd(["apt-get", "update"])
-    cmd(["apt-get", "install", "-y", "git", "git-annex"])
-    cmd([sys.executable, "-m", "pip", "install", "datalad>=1.1,<2"])
-
     code = Path("/tmp/code")
     data = Path("/tmp/data")
     cmd(["git", "clone", code_info["repo"], str(code)], use_git_auth=True)
@@ -292,7 +287,10 @@ def train_local(
     cmd(["datalad", "clone", dataset_info["repo"], str(data)], use_git_auth=True)
     cmd(["git", "checkout", "--detach", dataset_info["commit"]], data, use_git_auth=True)
     cmd(["datalad", "get", "-r", "."], data, use_git_auth=True)
-    cmd([sys.executable, "-m", "pip", "install", "-r", str(code / "requirements.txt")])
+    venv = Path("/tmp/venv")
+    cmd([sys.executable, "-m", "venv", str(venv)])
+    runtime_python = str(venv / "bin" / "python")
+    cmd([runtime_python, "-m", "pip", "install", "-r", str(code / "requirements.txt")])
 
     import zipfile
 
@@ -323,7 +321,7 @@ def train_local(
     save_dir = work / "run"
 
     command = [
-        sys.executable,
+        runtime_python,
         "-u",
         "train_local.py",
         "--id",
@@ -524,7 +522,7 @@ def train_local(
 
 
 @dsl.component(
-    base_image="python:3.11-slim",
+    base_image=RUNTIME_IMAGE,
     packages_to_install=["psutil>=5.9,<8", "scikit-learn>=1.4,<2"],
 )
 def evaluate_local(
@@ -541,7 +539,10 @@ def evaluate_local(
     evaluation_results: Output[Artifact],
     evaluation_metadata: Output[Artifact],
     system_metrics: Output[Artifact],
-) -> float:
+) -> NamedTuple(
+    "Outputs",
+    [("accuracy", float)],
+):
     import csv
     import hashlib
     import json
@@ -596,10 +597,6 @@ def evaluate_local(
     code_info = json.loads(Path(code_source.path).read_text(encoding="utf-8"))
     dataset_info = json.loads(Path(dataset.path).read_text(encoding="utf-8"))
 
-    cmd(["apt-get", "update"])
-    cmd(["apt-get", "install", "-y", "git", "git-annex"])
-    cmd([sys.executable, "-m", "pip", "install", "datalad>=1.1,<2"])
-
     code = Path("/tmp/code")
     data = Path("/tmp/data")
     cmd(["git", "clone", code_info["repo"], str(code)], use_git_auth=True)
@@ -607,7 +604,10 @@ def evaluate_local(
     cmd(["datalad", "clone", dataset_info["repo"], str(data)], use_git_auth=True)
     cmd(["git", "checkout", "--detach", dataset_info["commit"]], data, use_git_auth=True)
     cmd(["datalad", "get", "-r", "."], data, use_git_auth=True)
-    cmd([sys.executable, "-m", "pip", "install", "-r", str(code / "requirements.txt")])
+    venv = Path("/tmp/venv")
+    cmd([sys.executable, "-m", "venv", str(venv)])
+    runtime_python = str(venv / "bin" / "python")
+    cmd([runtime_python, "-m", "pip", "install", "-r", str(code / "requirements.txt")])
 
     import zipfile
 
@@ -631,7 +631,7 @@ def evaluate_local(
     out = Path("/tmp/eval")
     execution_id = "eval-" + time.strftime("%Y%m%d%H%M%S")
     command = [
-        sys.executable,
+        runtime_python,
         "-u",
         "eval.py",
         "--id",
@@ -756,7 +756,7 @@ def evaluate_local(
     Path(evaluation_metadata.path).write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     if askpass_path:
         Path(askpass_path).unlink(missing_ok=True)
-    return accuracy
+    return (accuracy,)
 
 
 @dsl.component(
@@ -838,7 +838,7 @@ def register_model(
 
 
 
-def _use_github_secret(task):
+def _configure_runtime_task(task):
     kubernetes.use_secret_as_env(
         task,
         secret_name="github-credentials",
@@ -847,6 +847,7 @@ def _use_github_secret(task):
             "token": "GITHUB_TOKEN",
         },
     )
+    kubernetes.set_image_pull_secrets(task, [IMAGE_PULL_SECRET])
     return task
 
 def _workflow(
@@ -884,7 +885,7 @@ def _workflow(
         code_commit=code_commit,
         dataset_commit=dataset_commit,
     )
-    _use_github_secret(sources)
+    _configure_runtime_task(sources)
 
     manifests = dsl.importer(
         artifact_uri=manifest_bundle_uri,
@@ -913,7 +914,7 @@ def _workflow(
         val_n_c_samples=val_n_c_samples,
         load_model_uri=load_model_uri,
     )
-    _use_github_secret(train)
+    _configure_runtime_task(train)
 
     evaluate = evaluate_local(
         code_source=sources.outputs["code_source"],
@@ -924,7 +925,7 @@ def _workflow(
         model=model,
         image_size=image_size,
     )
-    _use_github_secret(evaluate)
+    _configure_runtime_task(evaluate)
 
     register_model(
         code_source=sources.outputs["code_source"],
@@ -932,7 +933,7 @@ def _workflow(
         trained_model=train.outputs["trained_model"],
         training_metadata=train.outputs["training_metadata"],
         evaluation_metadata=evaluate.outputs["evaluation_metadata"],
-        accuracy=evaluate.outputs["Output"],
+        accuracy=evaluate.outputs["accuracy"],
         minimum_accuracy=minimum_accuracy,
         registered_model_name=registered_model_name,
         promote_on_pass=promote_on_pass,
